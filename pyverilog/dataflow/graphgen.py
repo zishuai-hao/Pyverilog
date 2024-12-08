@@ -72,7 +72,8 @@ class VerilogGraphGenerator(object):
 
         name = self.rename(signalname)
         self.identical = identical
-        self.add_node(name, label=signalname)
+        self.add_node(name, label=f"{signalname}:{Fraction(1,1)}")
+        # self.add_node(name, label=f"{signalname}")
         self.visit(tree, name)
 
     def draw(self, filename=None):

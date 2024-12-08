@@ -359,7 +359,7 @@ class Frame(object):
                  alwaysinfo=None, condition=None,
                  module=False, functioncall=False, taskcall=False,
                  generate=False, always=False, initial=False, loop=None, loop_iter=None,
-                 modulename=None):
+                 modulename=None, probability=1):
         self.name = name
         self.previous = previous
         self.next = []
@@ -384,6 +384,7 @@ class Frame(object):
         self.nonblockingassign = collections.OrderedDict()
 
         self.modulename = modulename
+        self.probability = probability
 
     def getName(self):
         return self.name
@@ -519,6 +520,9 @@ class Frame(object):
     def getNonblockingAssigns(self):
         return self.nonblockingassign
 
+    def updateProbability(self, probability):
+        self.probability = probability
+
 
 class FrameTable(object):
     def __init__(self):
@@ -645,7 +649,7 @@ class FrameTable(object):
     def setCurrent(self, current):
         self.current = current
 
-    def getCurrent(self):
+    def getCurrent(self) -> ScopeChain:
         return self.current
 
     def getModuleName(self):
@@ -693,6 +697,15 @@ class FrameTable(object):
 
     def updateConst(self, const):
         self.dict[self.current].updateConst(const)
+
+    def getProbability(self):
+        if self.current == ScopeChain(): # 初次进入
+            return 1
+        return self.dict[self.current].probability
+
+    def updateProbability(self, prob):
+        # print(f"当前作用域{self.current}的概率为：{prob}")
+        self.dict[self.current].updateProbability(prob)
 
     def getAllInstances(self):
         ret = []

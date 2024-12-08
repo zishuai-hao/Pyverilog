@@ -10,24 +10,16 @@
 
 from __future__ import absolute_import
 from __future__ import print_function
-import sys
-import os
-import re
 
-from pyverilog.vparser.ast import *
-import pyverilog.utils.util as util
-import pyverilog.utils.verror as verror
-import pyverilog.utils.signaltype as signaltype
-from pyverilog.utils.scope import ScopeLabel, ScopeChain
-from pyverilog.dataflow.dataflow import *
-from pyverilog.dataflow.visit import *
-from pyverilog.dataflow.optimizer import VerilogOptimizer
 import pyverilog.dataflow.reorder as reorder
 import pyverilog.dataflow.replace as replace
+from pyverilog.dataflow.dataflow import *
+from pyverilog.dataflow.optimizer import VerilogOptimizer
+from pyverilog.dataflow.visit import *
 
 
 class BindVisitor(NodeVisitor):
-    def __init__(self, moduleinfotable, top, frames, noreorder=False):
+    def __init__(self, moduleinfotable, top, frames: FrameTable, noreorder=False):
         self.moduleinfotable = moduleinfotable
         self.top = top
         self.frames = frames
@@ -219,7 +211,7 @@ class BindVisitor(NodeVisitor):
         label = self.labels.get(self.frames.getLabelKey('always'))
         current = self.stackNextFrame(label, 'always',
                                       generate=self.frames.isGenerate(),
-                                      always=True)
+                                      always=True, probability=self.frames.getProbability())
 
         (clock_name, clock_edge, clock_bit,
          reset_name, reset_edge, reset_bit,
@@ -307,9 +299,10 @@ class BindVisitor(NodeVisitor):
                     self.copyBlockingAssigns(
                         current + ScopeLabel(self._toELSE(label), 'if'), current)
             return
-
-        label = self._if_true(node)
-        self._if_false(node, label)
+        current = self.frames.getCurrent()
+        probability = self.computerProbability(node.cond, current)
+        label = self._if_true(node, probability)
+        self._if_false(node, label, probability)
 
         current = self.frames.getCurrent()
         if node.true_statement is not None:
@@ -320,7 +313,7 @@ class BindVisitor(NodeVisitor):
     def _toELSE(self, label):
         return label + '_ELSE'
 
-    def _if_true(self, node):
+    def _if_true(self, node, probability):
         if node.true_statement is None:
             return None
         label = self.labels.get(self.frames.getLabelKey('if'))
@@ -331,7 +324,8 @@ class BindVisitor(NodeVisitor):
                                       taskcall=self.frames.isTaskcall(),
                                       generate=self.frames.isGenerate(),
                                       always=self.frames.isAlways(),
-                                      initial=self.frames.isInitial())
+                                      initial=self.frames.isInitial(),
+                                      probability=probability * self.frames.getProbability())
 
         self.copyPreviousNonblockingAssign(current + ScopeLabel(label, 'if'))
 
@@ -340,7 +334,7 @@ class BindVisitor(NodeVisitor):
         self.frames.setCurrent(current)
         return label
 
-    def _if_false(self, node, label):
+    def _if_false(self, node, label, probability):
         if node.false_statement is None:
             return
         label = self._toELSE(label)
@@ -351,7 +345,8 @@ class BindVisitor(NodeVisitor):
                                       taskcall=self.frames.isTaskcall(),
                                       generate=self.frames.isGenerate(),
                                       always=self.frames.isAlways(),
-                                      initial=self.frames.isInitial())
+                                      initial=self.frames.isInitial(),
+                                      probability=(1 - probability) * self.frames.getProbability())
 
         self.copyPreviousNonblockingAssign(current + ScopeLabel(label, 'if'))
 
@@ -360,6 +355,201 @@ class BindVisitor(NodeVisitor):
         self.frames.setCurrent(current)
         return label
 
+    def computerProbability(self, cond_node, scope) -> Fraction:
+        if isinstance(cond_node, str):
+            name = self.searchTerminal(cond_node, scope)
+            term = self.dataflow.getTerm(name)
+            msb, lsb = term.msb, term.lsb
+            result = Fraction(1, pow(2, msb - lsb + 1))
+            print(f"{cond_node}条件下的概率：{result}")
+            return result
+
+        if isinstance(cond_node, Identifier):
+            if cond_node.scope is not None:
+                raise NotImplemented
+                name = self.searchScopeTerminal(cond_node.scope, cond_node.name, scope)
+                if name is None:
+                    raise verror.DefinitionError('No such signal: %s' % cond_node.name)
+                return DFTerminal(name)
+            name = self.searchTerminal(cond_node.name, scope)
+            if name is None:
+                raise verror.DefinitionError('No such signal: %s' % cond_node.name)
+            term = self.dataflow.getTerm(name)
+            msb, lsb = term.msb, term.lsb
+            result = Fraction(1, pow(2, int(msb.value) - int(lsb.value) + 1))
+            print(f"{cond_node}概率：{result}")
+            return result
+
+        # if isinstance(cond_node, Cond):
+        #     true_df = self.makeDFTree(cond_node.true_value, scope)
+        #     false_df = self.makeDFTree(cond_node.false_value, scope)
+        #     cond_df = self.makeDFTree(cond_node.cond, scope)
+        #     if isinstance(cond_df, DFBranch):
+        #         return reorder.insertCond(cond_df, true_df, false_df)
+        #     return DFBranch(cond_df, true_df, false_df)
+
+        if isinstance(cond_node, Eq):
+            return self.computerProbability(cond_node.left, scope)
+
+        if isinstance(cond_node, Lor):
+            return self.computerProbability(cond_node.left, scope) + self.computerProbability(cond_node.right, scope)
+
+        if isinstance(cond_node, Ulnot):
+            return self.computerProbability(cond_node.right, scope)
+
+        if isinstance(cond_node, Unot):
+            return self.computerProbability(cond_node.right, scope)
+
+        if isinstance(cond_node, Operator):  # EQ
+            left_df = self.makeDFTree(cond_node.left, scope)
+            right_df = self.makeDFTree(cond_node.right, scope)
+            if isinstance(left_df, DFBranch) or isinstance(right_df, DFBranch):
+                return reorder.insertOp(left_df, right_df, cond_node.__class__.__name__)
+            return DFOperator((left_df, right_df,), cond_node.__class__.__name__)
+
+        if isinstance(cond_node, IntConst):
+            return DFIntConst(cond_node.value)
+
+        # region # 暂时不处理
+
+        #
+        # if isinstance(cond_node, FloatConst):
+        #     return DFFloatConst(cond_node.value)
+        #
+        # if isinstance(cond_node, StringConst):
+        #     return DFStringConst(cond_node.value)
+        #
+
+        #
+        # if isinstance(cond_node, UnaryOperator):
+        #     right_df = self.makeDFTree(cond_node.right, scope)
+        #     if isinstance(right_df, DFBranch):
+        #         return reorder.insertUnaryOp(right_df, cond_node.__class__.__name__)
+        #     return DFOperator((right_df,), cond_node.__class__.__name__)
+        #
+
+        #
+        # if isinstance(cond_node, Partselect):
+        #     var_df = self.makeDFTree(cond_node.var, scope)
+        #     msb_df = self.makeDFTree(cond_node.msb, scope)
+        #     lsb_df = self.makeDFTree(cond_node.lsb, scope)
+        #
+        #     if isinstance(var_df, DFBranch):
+        #         return reorder.insertPartselect(var_df, msb_df, lsb_df)
+        #     return DFPartselect(var_df, msb_df, lsb_df)
+        #
+        # if isinstance(cond_node, Pointer):
+        #     var_df = self.makeDFTree(cond_node.var, scope)
+        #     ptr_df = self.makeDFTree(cond_node.ptr, scope)
+        #
+        #     if isinstance(var_df, DFTerminal) and self.getTermDims(var_df.name) is not None:
+        #         return DFPointer(var_df, ptr_df)
+        #     return DFPartselect(var_df, ptr_df, copy.deepcopy(ptr_df))
+        #
+        # if isinstance(cond_node, Concat):
+        #     nextcond_nodes = []
+        #     for n in cond_node.list:
+        #         nextcond_nodes.append(self.makeDFTree(n, scope))
+        #     for n in nextcond_nodes:
+        #         if isinstance(n, DFBranch):
+        #             return reorder.insertConcat(tuple(nextcond_nodes))
+        #     return DFConcat(tuple(nextcond_nodes))
+        #
+        # if isinstance(cond_node, Repeat):
+        #     nextcond_nodes = []
+        #     times = self.optimize(self.getTree(cond_node.times, scope)).value
+        #     value = self.makeDFTree(cond_node.value, scope)
+        #     for i in range(int(times)):
+        #         nextcond_nodes.append(copy.deepcopy(value))
+        #     return DFConcat(tuple(nextcond_nodes))
+        #
+        # if isinstance(cond_node, FunctionCall):
+        #     func = self.searchFunction(cond_node.name.name, scope)
+        #     if func is None:
+        #         raise verror.DefinitionError('No such function: %s' % cond_node.name.name)
+        #     label = self.labels.get(self.frames.getLabelKey('functioncall'))
+        #
+        #     save_current = self.frames.getCurrent()
+        #     self.frames.setCurrent(scope)
+        #
+        #     current = self.frames.addFrame(
+        #         ScopeLabel(label, 'functioncall'),
+        #         functioncall=True, generate=self.frames.isGenerate(),
+        #         always=self.frames.isAlways())
+        #
+        #     varname = self.frames.getCurrent() + ScopeLabel(func.name, 'signal')
+        #
+        #     self.addTerm(Wire(func.name, func.retwidth))
+        #
+        #     funcports = self.searchFunctionPorts(cond_node.name.name, scope)
+        #     funcargs = cond_node.args
+        #
+        #     if len(funcports) != len(funcargs):
+        #         raise verror.FormatError("%s takes exactly %d arguments. (%d given)" %
+        #                                  (func.name.name, len(funcports), len(funcargs)))
+        #     for port in funcports:
+        #         self.addTerm(Wire(port.name, port.width))
+        #
+        #     lscope = self.frames.getCurrent()
+        #     rscope = scope
+        #     func_i = 0
+        #     for port in funcports:
+        #         arg = funcargs[func_i]
+        #         dst = self.getDestinations(port.name, lscope)
+        #         self.addDataflow(dst, arg, lscope, rscope)
+        #         func_i += 1
+        #
+        #     self.visit(func)
+        #
+        #     self.frames.setCurrent(current)
+        #     self.frames.setCurrent(save_current)
+        #
+        #     return DFTerminal(varname)
+        #
+        # if isinstance(cond_node, TaskCall):
+        #     task = self.searchTask(cond_node.name.name, scope)
+        #     label = self.labels.get(self.frames.getLabelKey('taskcall'))
+        #
+        #     current = self.frames.addFrame(
+        #         ScopeLabel(label, 'taskcall'),
+        #         taskcall=True, generate=self.frames.isGenerate(),
+        #         always=self.frames.isAlways())
+        #
+        #     varname = self.frames.getCurrent() + ScopeLabel(task.name, 'signal')
+        #
+        #     taskports = self.searchTaskPorts(cond_node.name.name, scope)
+        #     taskargs = cond_node.args
+        #
+        #     if len(taskports) != len(taskargs):
+        #         raise verror.FormatError("%s takes exactly %d arguments. (%d given)" %
+        #                                  (task.name.name, len(taskports), len(taskargs)))
+        #     for port in taskports:
+        #         self.addTerm(Wire(port.name, port.width))
+        #
+        #     lscope = self.frames.getCurrent()
+        #     rscope = scope
+        #     task_i = 0
+        #     for port in taskports:
+        #         arg = taskargs[task_i]
+        #         dst = self.getDestinations(port.name, lscope)
+        #         self.addDataflow(dst, arg, lscope, rscope)
+        #         task_i += 1
+        #
+        #     self.visit(taskargs)
+        #     self.frames.setCurrent(current)
+        #     return DFTerminal(varname)
+        #
+        # if isinstance(cond_node, SystemCall):
+        #     if cond_node.syscall == 'unsigned':
+        #         return self.makeDFTree(cond_node.args[0], scope)
+        #     if cond_node.syscall == 'signed':
+        #         return self.makeDFTree(cond_node.args[0], scope)
+        #     return DFIntConst('0')
+        # endregion
+
+        raise verror.FormatError("unsupported AST cond_node type: %s %s" %
+                                 (str(type(cond_node)), str(cond_node)))
+
     def visit_CaseStatement(self, node):
         if self.frames.isFunctiondef() and not self.frames.isFunctioncall():
             return
@@ -367,7 +557,7 @@ class BindVisitor(NodeVisitor):
             return
         start_frame = self.frames.getCurrent()
         caseframes = []
-        self._case(node.comp, node.caselist, caseframes)
+        self._case(node.comp, node.caselist, caseframes, self.frames.getProbability(), self.frames.getProbability())
         self.frames.setCurrent(start_frame)
         for f in caseframes:
             self.copyBlockingAssigns(f, start_frame)
@@ -375,7 +565,23 @@ class BindVisitor(NodeVisitor):
     def visit_CasexStatement(self, node):
         return self.visit_CaseStatement(node)
 
-    def _case(self, comp, caselist, myframes):
+    def _case(self, comp, caselist, myframes, case_probability, reduce_probability):
+        """
+        case计算
+        输入：
+            casselist 每次取出一个case,
+            case_prob是整个case块执行的概率，
+            reduce_prob是整个case在经过 N个分支后剩余的执行概率
+        计算公式：
+            分三种情况：
+                当前分支的概率=条件触发概率(computer_prob) * case块执行的概率(case_prob)  (1)
+                当前分支所对应的else分支的概率=剩余的执行概率reduce_probability -= 当前分支的概率，这里的-=表示需要更新剩余执行概率  (2)
+
+                下一分支的概率=上面公式(1)
+                下一分支对应的else分支概率=剩余的执行概率(更新后)reduce_probability - 下一分支的概率
+
+                default下的分支概率，直接等于剩余概率
+        """
         if len(caselist) == 0:
             return
 
@@ -390,6 +596,10 @@ class BindVisitor(NodeVisitor):
                 cond = Eq(comp, case.cond[0])
         # else: raise Exception
         label = self.labels.get(self.frames.getLabelKey('if'))
+        if len(caselist) == 1 and case.cond is None:  # default情况下
+            computer_prob = reduce_probability
+        else:
+            computer_prob = self.computerProbability(cond, self.frames.getCurrent()) * case_probability
         current = self.stackNextFrame(label, 'if',
                                       frametype='ifthen',
                                       condition=cond,
@@ -397,7 +607,8 @@ class BindVisitor(NodeVisitor):
                                       taskcall=self.frames.isTaskcall(),
                                       generate=self.frames.isGenerate(),
                                       always=self.frames.isAlways(),
-                                      initial=self.frames.isInitial())
+                                      initial=self.frames.isInitial(),
+                                      probability=computer_prob)
 
         self.copyPreviousNonblockingAssign(current + ScopeLabel(label, 'if'))
 
@@ -409,7 +620,7 @@ class BindVisitor(NodeVisitor):
 
         if len(caselist) == 1:
             return
-
+        reduce_probability -= computer_prob  # 计算剩余
         label = self._toELSE(label)
         current = self.stackNextFrame(label, 'if',
                                       frametype='ifelse',
@@ -418,13 +629,14 @@ class BindVisitor(NodeVisitor):
                                       taskcall=self.frames.isTaskcall(),
                                       generate=self.frames.isGenerate(),
                                       always=self.frames.isAlways(),
-                                      initial=self.frames.isInitial())
+                                      initial=self.frames.isInitial(),
+                                      probability=reduce_probability)
 
         self.copyPreviousNonblockingAssign(current + ScopeLabel(label, 'if'))
 
         myframes.append(current + ScopeLabel(label, 'if'))
 
-        self._case(comp, caselist[1:], myframes)
+        self._case(comp, caselist[1:], myframes, case_probability, reduce_probability)
 
     def visit_ForStatement(self, node):
         if self.frames.isFunctiondef() and not self.frames.isFunctioncall():
@@ -535,7 +747,8 @@ class BindVisitor(NodeVisitor):
                                       taskcall=self.frames.isTaskcall(),
                                       generate=self.frames.isGenerate(),
                                       always=self.frames.isAlways(),
-                                      initial=self.frames.isInitial())
+                                      initial=self.frames.isInitial(),
+                                      probability=self.frames.getProbability())
 
         self.generic_visit(node)
         self.frames.setCurrent(current)
@@ -564,7 +777,9 @@ class BindVisitor(NodeVisitor):
 
     def stackInstanceFrame(self, instname, modulename):
         current = self.frames.getCurrent()
+        current_probability = self.frames.getProbability()
         self.frames.setCurrent(current + ScopeLabel(instname, 'module'))
+        self.frames.updateProbability(current_probability)
         self.copyFrameInfo(current + ScopeLabel(instname, 'module'))
         return current
 
@@ -572,7 +787,10 @@ class BindVisitor(NodeVisitor):
                        frametype='none',
                        alwaysinfo=None, condition=None,
                        module=False, functioncall=False, taskcall=False,
-                       generate=False, always=False, initial=False, loop=None, loop_iter=None):
+                       generate=False, always=False, initial=False, loop=None, loop_iter=None, probability=Fraction(1)):
+        """
+        probability: 当前分支的概率
+        """
         current = self.frames.getCurrent()
         scopelabel = ScopeLabel(label, scopetype, loop)
         nextscope = current + scopelabel
@@ -586,6 +804,7 @@ class BindVisitor(NodeVisitor):
                                            loop=loop, loop_iter=loop_iter)
 
         self.frames.setCurrent(nextscope)
+        self.frames.updateProbability(probability)
         new_current = self.frames.getCurrent()
         self.copyFrameInfo(new_current)
         return current
@@ -998,87 +1217,129 @@ class BindVisitor(NodeVisitor):
             tree = reorder.reorder(tree)
         return tree
 
-    def makeDFTree(self, node, scope):
+    def makeDFTree(self, node, scope, probability=None):
+        """
+        从给定的抽象语法树（AST）节点递归构建数据流树（DFT）。
+        这个方法是数据流分析过程的核心，因为它遍历AST并构建一个DFT，代表系统中的数据流。
+
+        :param node: 要处理的AST中的当前节点。
+        :param scope: 正在处理节点的当前作用域。
+        :param probability: 当前节点的概率，用于概率分析。
+        :return: 代表给定AST节点的数据流的DFT节点。
+        """
+        if not probability: # 如果没有指定当前DFTree的概率，则使用当前作用域的概率
+            probability = self.frames.dict[scope].probability
+
         if isinstance(node, str):
+            # 如果节点是一个字符串，它代表DFT中的一个终端。
+            # 在当前作用域中搜索终端并返回一个DFTerminal节点。
             name = self.searchTerminal(node, scope)
-            return DFTerminal(name)
+            return DFTerminal(name, probability=probability)
 
         if isinstance(node, Identifier):
+            # 如果节点是一个标识符，它可能代表一个信号或一个变量。
+            # 检查标识符是否有作用域，并在作用域中搜索它。
             if node.scope is not None:
+                raise NotImplemented
                 name = self.searchScopeTerminal(node.scope, node.name, scope)
                 if name is None:
                     raise verror.DefinitionError('No such signal: %s' % node.name)
-                return DFTerminal(name)
+                return DFTerminal(name, probability=probability)
+            # 如果没有指定作用域，就在当前作用域中搜索标识符。
             name = self.searchTerminal(node.name, scope)
             if name is None:
                 raise verror.DefinitionError('No such signal: %s' % node.name)
-            return DFTerminal(name)
+            return DFTerminal(name, probability=probability)
 
         if isinstance(node, IntConst):
-            return DFIntConst(node.value)
+            # 如果节点是一个整数常量，返回一个DFIntConst节点。
+            return DFIntConst(node.value, probability=probability)
 
         if isinstance(node, FloatConst):
-            return DFFloatConst(node.value)
+            # 如果节点是一个浮点常量，返回一个DFFloatConst节点。
+            return DFFloatConst(node.value, probability=probability)
 
         if isinstance(node, StringConst):
-            return DFStringConst(node.value)
+            # 如果节点是一个字符串常量，返回一个DFStringConst节点。
+            return DFStringConst(node.value, probability=probability)
 
         if isinstance(node, Cond):
-            true_df = self.makeDFTree(node.true_value, scope)
-            false_df = self.makeDFTree(node.false_value, scope)
-            cond_df = self.makeDFTree(node.cond, scope)
+            # 如果节点是一个条件语句，递归构建条件、真分支和假分支的DFT。
+            true_df = self.makeDFTree(node.true_value, scope, probability)
+            false_df = self.makeDFTree(node.false_value, scope, probability)
+            cond_df = self.makeDFTree(node.cond, scope, probability)
+            # 如果条件DFT是一个分支，就把真分支和假分支插入进去。
             if isinstance(cond_df, DFBranch):
+                raise NotImplemented
                 return reorder.insertCond(cond_df, true_df, false_df)
-            return DFBranch(cond_df, true_df, false_df)
+            # 否则，创建一个新的分支节点。
+            return DFBranch(cond_df, true_df, false_df, probability=probability)
 
         if isinstance(node, UnaryOperator):
-            right_df = self.makeDFTree(node.right, scope)
+            # 如果节点是一个一元运算符，递归构建它的右操作数的DFT。
+            right_df = self.makeDFTree(node.right, scope, probability)
+            # 如果右操作数的DFT是一个分支，就把一元运算符插入进去。
             if isinstance(right_df, DFBranch):
                 return reorder.insertUnaryOp(right_df, node.__class__.__name__)
-            return DFOperator((right_df,), node.__class__.__name__)
+            # 否则，创建一个新的运算符节点。
+            return DFOperator((right_df,), node.__class__.__name__, probability=probability)
 
         if isinstance(node, Operator):
-            left_df = self.makeDFTree(node.left, scope)
-            right_df = self.makeDFTree(node.right, scope)
+            # 如果节点是一个二元运算符，递归构建它的左操作数和右操作数的DFT。
+            left_df = self.makeDFTree(node.left, scope, probability)
+            right_df = self.makeDFTree(node.right, scope, probability)
+            # 如果任何一个操作数的DFT是一个分支，就把二元运算符插入进去。
             if isinstance(left_df, DFBranch) or isinstance(right_df, DFBranch):
                 return reorder.insertOp(left_df, right_df, node.__class__.__name__)
-            return DFOperator((left_df, right_df,), node.__class__.__name__)
+            # 否则，创建一个新的运算符节点。
+            return DFOperator((left_df, right_df,), node.__class__.__name__, probability=probability)
 
         if isinstance(node, Partselect):
-            var_df = self.makeDFTree(node.var, scope)
-            msb_df = self.makeDFTree(node.msb, scope)
-            lsb_df = self.makeDFTree(node.lsb, scope)
-
+            # 如果节点是一个部分选择，递归构建变量、MSB和LSB的DFT。
+            var_df = self.makeDFTree(node.var, scope, probability)
+            msb_df = self.makeDFTree(node.msb, scope, probability)
+            lsb_df = self.makeDFTree(node.lsb, scope, probability)
+            # 如果变量的DFT是一个分支，就把部分选择插入进去。
             if isinstance(var_df, DFBranch):
                 return reorder.insertPartselect(var_df, msb_df, lsb_df)
-            return DFPartselect(var_df, msb_df, lsb_df)
+            # 否则，创建一个新的部分选择节点。
+            return DFPartselect(var_df, msb_df, lsb_df, probability=probability)
 
         if isinstance(node, Pointer):
-            var_df = self.makeDFTree(node.var, scope)
-            ptr_df = self.makeDFTree(node.ptr, scope)
-
+            # 如果节点是一个指针，递归构建变量和指针的DFT。
+            var_df = self.makeDFTree(node.var, scope, probability)
+            ptr_df = self.makeDFTree(node.ptr, scope, probability)
+            # 如果变量的DFT是一个终端并且有维度，就创建一个指针节点。
             if isinstance(var_df, DFTerminal) and self.getTermDims(var_df.name) is not None:
                 return DFPointer(var_df, ptr_df)
-            return DFPartselect(var_df, ptr_df, copy.deepcopy(ptr_df))
+            # 否则，创建一个部分选择节点，把指针作为MSB和LSB。
+            return DFPartselect(var_df, ptr_df, copy.deepcopy(ptr_df), probability=probability)
 
         if isinstance(node, Concat):
+            # 如果节点是一个连接，递归构建每个操作数的DFT。
             nextnodes = []
             for n in node.list:
-                nextnodes.append(self.makeDFTree(n, scope))
+                nextnodes.append(self.makeDFTree(n, scope, probability))
+            # 如果任何一个操作数的DFT是一个分支，就把连接插入进去。
             for n in nextnodes:
                 if isinstance(n, DFBranch):
                     return reorder.insertConcat(tuple(nextnodes))
-            return DFConcat(tuple(nextnodes))
+            # 否则，创建一个新的连接节点。
+            return DFConcat(tuple(nextnodes), probability=probability)
 
         if isinstance(node, Repeat):
+            # 如果节点是一个重复，递归构建次数和值的DFT。
             nextnodes = []
             times = self.optimize(self.getTree(node.times, scope)).value
-            value = self.makeDFTree(node.value, scope)
+            value = self.makeDFTree(node.value, scope, probability)
+            # 重复值的DFT指定的次数。
             for i in range(int(times)):
                 nextnodes.append(copy.deepcopy(value))
-            return DFConcat(tuple(nextnodes))
+            # 创建一个连接节点，把重复的值放进去。
+            return DFConcat(tuple(nextnodes), probability=probability)
 
         if isinstance(node, FunctionCall):
+            # 如果节点是一个函数调用，搜索函数并处理它的参数。
             func = self.searchFunction(node.name.name, scope)
             if func is None:
                 raise verror.DefinitionError('No such function: %s' % node.name.name)
@@ -1087,7 +1348,7 @@ class BindVisitor(NodeVisitor):
             save_current = self.frames.getCurrent()
             self.frames.setCurrent(scope)
 
-            current = self.frames.addFrame(
+            current = self.frames.addFrame(  # TODO 暂不处理 FunctionCall
                 ScopeLabel(label, 'functioncall'),
                 functioncall=True, generate=self.frames.isGenerate(),
                 always=self.frames.isAlways())
@@ -1118,14 +1379,16 @@ class BindVisitor(NodeVisitor):
 
             self.frames.setCurrent(current)
             self.frames.setCurrent(save_current)
-
+            # 处理函数调用和它的参数。
+            # 这是未来实现的一个占位符。
             return DFTerminal(varname)
 
         if isinstance(node, TaskCall):
+            # 如果节点是一个任务调用，搜索任务并处理它的参数。
             task = self.searchTask(node.name.name, scope)
             label = self.labels.get(self.frames.getLabelKey('taskcall'))
 
-            current = self.frames.addFrame(
+            current = self.frames.addFrame(  # TODO 暂不处理 TaskCall
                 ScopeLabel(label, 'taskcall'),
                 taskcall=True, generate=self.frames.isGenerate(),
                 always=self.frames.isAlways())
@@ -1152,15 +1415,19 @@ class BindVisitor(NodeVisitor):
 
             self.visit(taskargs)
             self.frames.setCurrent(current)
+            # 处理任务调用和它的参数。
+            # 这是未来实现的一个占位符。
             return DFTerminal(varname)
 
         if isinstance(node, SystemCall):
+            # 如果节点是一个系统调用，根据系统调用的类型处理它。
             if node.syscall == 'unsigned':
-                return self.makeDFTree(node.args[0], scope)
+                return self.makeDFTree(node.args[0], scope, probability)
             if node.syscall == 'signed':
-                return self.makeDFTree(node.args[0], scope)
+                return self.makeDFTree(node.args[0], scope, probability)
             return DFIntConst('0')
 
+        # 如果节点类型不被识别，就抛出一个格式错误。
         raise verror.FormatError("unsupported AST node type: %s %s" %
                                  (str(type(node)), str(node)))
 
@@ -1206,7 +1473,7 @@ class BindVisitor(NodeVisitor):
             current_bindlist = self.frames.getBlockingAssign(tree.name, scope)
             if len(current_bindlist) == 0:
                 return tree
-
+            raise NotImplemented
             return self.removeOverwrappedCondition(tree, current_bindlist, scope)
 
         if isinstance(tree, DFBranch):
@@ -1215,7 +1482,7 @@ class BindVisitor(NodeVisitor):
             condnode = self.resolveBlockingAssign(tree.condnode, scope)
             if isinstance(condnode, DFBranch):
                 return reorder.insertBranch(condnode, truenode, falsenode)
-            return DFBranch(condnode, truenode, falsenode)
+            return DFBranch(condnode, truenode, falsenode, probability=tree.probability)
 
         if isinstance(tree, DFOperator):
             resolvednodes = []
@@ -1224,7 +1491,7 @@ class BindVisitor(NodeVisitor):
             for r in resolvednodes:
                 if isinstance(r, DFBranch):
                     return reorder.insertOpList(resolvednodes, tree.operator)
-            return DFOperator(tuple(resolvednodes), tree.operator)
+            return DFOperator(tuple(resolvednodes), tree.operator, probability=tree.probability)
 
         if isinstance(tree, DFConcat):
             resolvednodes = []
@@ -1233,7 +1500,7 @@ class BindVisitor(NodeVisitor):
             for r in resolvednodes:
                 if isinstance(r, DFBranch):
                     return reorder.insertConcat(resolvednodes)
-            return DFConcat(tuple(resolvednodes))
+            return DFConcat(tuple(resolvednodes), probability=tree.probability)
 
         if isinstance(tree, DFPartselect):
             resolved_msb = self.resolveBlockingAssign(tree.msb, scope)
@@ -1242,9 +1509,10 @@ class BindVisitor(NodeVisitor):
             if isinstance(resolved_var, DFBranch):
                 return reorder.insertPartselect(resolved_var,
                                                 resolved_msb, resolved_lsb)
-            return DFPartselect(resolved_var, resolved_msb, resolved_lsb)
+            return DFPartselect(resolved_var, resolved_msb, resolved_lsb, probability=tree.probability)
 
         if isinstance(tree, DFPointer):
+            # raise NotImplemented
             resolved_ptr = self.resolveBlockingAssign(tree.ptr, scope)
             if (isinstance(tree.var, DFTerminal) and
                     self.getTermDims(tree.var.name) is not None):
@@ -1253,15 +1521,15 @@ class BindVisitor(NodeVisitor):
                     return DFPointer(tree.var, resolved_ptr)
                 new_tree = DFPointer(tree.var, resolved_ptr)
                 for bind in current_bindlist:
-                    new_tree = DFBranch(DFOperator((bind.ptr, resolved_ptr), 'Eq'),
-                                        bind.tree, new_tree)
+                    new_tree = DFBranch(DFOperator((bind.ptr, resolved_ptr), 'Eq', probability=tree.probability),
+                                        bind.tree, new_tree, probability=tree.probability)
                 print(("Warning: "
                        "Overwrting Blocking Assignment with Reg Array is not supported"))
                 return new_tree
             resolved_var = self.resolveBlockingAssign(tree.var, scope)
             if isinstance(resolved_var, DFBranch):
                 return reorder.insertPointer(resolved_var, resolved_ptr)
-            return DFPointer(resolved_var, resolved_ptr)
+            return DFPointer(resolved_var, resolved_ptr, probability=tree.probability)
 
         raise verror.FormatError("unsupported DFNode type: %s %s" %
                                  (str(type(tree)), str(tree)))
@@ -1289,6 +1557,7 @@ class BindVisitor(NodeVisitor):
             length = (abs(self.optimize(term.msb).value
                           - self.optimize(term.lsb).value) + 1)
             return ptr * length + lsb
+
         for bind in sorted(bindlist, key=bindkey):
             lsb = 0 if bind.lsb is None else bind.lsb.value
             if last_ptr != (-1 if not isinstance(bind.ptr, DFEvalValue)
@@ -1304,7 +1573,7 @@ class BindVisitor(NodeVisitor):
     def getDestinations(self, left, scope):
         ret = []
         dst = self.getDsts(left, scope)
-        part_offset = DFIntConst('0')
+        part_offset = DFIntConst('0', probability=self.frames.getProbability())
         for name, msb, lsb, ptr in reversed(dst):
             if len(dst) == 1:
                 ret.append((name, msb, lsb, ptr, None, None))
@@ -1312,11 +1581,12 @@ class BindVisitor(NodeVisitor):
 
             if msb is None and lsb is None:
                 msb, lsb = self.getTermWidth(name)
-            diff = reorder.reorder(DFOperator((msb, lsb), 'Minus'))
+            diff = reorder.reorder(DFOperator((msb, lsb), 'Minus', probability=self.frames.getProbability()))
             part_lsb = part_offset
-            part_msb = reorder.reorder(DFOperator((part_offset, diff), 'Plus'))
+            part_msb = reorder.reorder(
+                DFOperator((part_offset, diff), 'Plus', probability=self.frames.getProbability()))
             part_offset = reorder.reorder(
-                DFOperator((part_msb, DFIntConst('1')), 'Plus'))
+                DFOperator((part_msb, DFIntConst('1')), 'Plus', probability=self.frames.getProbability()))
 
             ret.append((name, msb, lsb, ptr, part_msb, part_lsb))
 
@@ -1403,7 +1673,7 @@ class BindVisitor(NodeVisitor):
 
             self.dataflow.addBind(name, bind)
 
-            if alwaysinfo is not None:
+            if alwaysinfo is not None: # 当前节点在 always下，所以包含非阻塞赋值
                 self.setNonblockingAssign(name, dst, raw_tree,
                                           msb, lsb, ptr,
                                           part_msb, part_lsb,
@@ -1470,49 +1740,89 @@ class BindVisitor(NodeVisitor):
     def makeBind(self, name, msb, lsb, ptr, part_msb, part_lsb,
                  raw_tree, condlist, flowlist,
                  num_dst=1, alwaysinfo=None, bindtype=None):
+        """
+        创建给定参数的Bind对象。
 
+        此方法通过处理给定的参数（包括名称、MSB、LSB、指针、部分MSB、部分LSB、原始树、条件列表、流列表、目的地数量、始终信息和绑定类型）
+        来构造Bind对象。它检查现有绑定，根据条件和流构造树，并在必要时应用部分选择。
+
+        参数：
+        - name：绑定的名称。
+        - msb：最高有效位。
+        - lsb：最低有效位。
+        - ptr：指针。
+        - part_msb：部分选择的最高有效位。
+        - part_lsb：部分选择的最低有效位。
+        - raw_tree：原始树结构。
+        - condlist：条件列表。
+        - flowlist：流控制值列表。
+        - num_dst：目的地数量（默认为1）。
+        - alwaysinfo：始终块的附加信息（默认为None）。
+        - bindtype：绑定类型（默认为None）。
+
+        返回：
+        - 从给定参数构造的Bind对象。
+        """
+
+        # 获取给定名称的当前绑定列表
         current_bindlist = self.getBindlist(name)
         current_tree = None
         current_msb = None
         current_lsb = None
         current_ptr = None
 
+        # 检查是否存在现有绑定
         if len(current_bindlist) > 0:
+            # 遍历当前绑定以找到匹配项
             for current_bind in current_bindlist:
+                # 检查当前绑定是否与给定参数匹配
                 if (current_bind.msb == msb and
-                    current_bind.lsb == lsb
-                        and current_bind.ptr == ptr ):
+                        current_bind.lsb == lsb
+                        and current_bind.ptr == ptr):
+                    # 如果找到匹配项，更新当前树及其属性
                     current_tree = current_bind.tree
                     current_msb = current_bind.msb
                     current_lsb = current_bind.lsb
                     current_ptr = current_bind.ptr
                     break
 
+        # 初始化剩余树、条件列表和流列表的变量
         rest_tree = current_tree
         rest_condlist = condlist
         rest_flowlist = flowlist
 
+        # 初始化一个空元组，用于存储匹配流列表
         match_flowlist = ()
+        # 检查当前MSB、LSB和PTR是否与给定参数匹配
         if (current_msb == msb and
-            current_lsb == lsb
-                and current_ptr == ptr ):
+                current_lsb == lsb
+                and current_ptr == ptr):
+            # 如果找到匹配项，处理分支树以找到匹配流列表
             (rest_tree,
-             rest_condlist,
-             rest_flowlist,
+             rest_condlist,  # 不匹配的 condalist
+             rest_flowlist,  # 不匹配的 控制流
              match_flowlist) = self.diffBranchTree(current_tree, condlist, flowlist)
 
+        # 将 tree 构造为待添加的分支树
         add_tree = self.makeBranchTree(rest_condlist, rest_flowlist, raw_tree)
+        # 检查是否存在剩余流列表和剩余树
         if rest_flowlist and rest_tree is not None:
-            _rest_flowlist = rest_flowlist[:-1] + (not rest_flowlist[-1], )
+            # 为将剩余树附加到添加树而修改剩余流列表
+            _rest_flowlist = rest_flowlist[:-1] + (not rest_flowlist[-1],)
+            # 使用修改后的剩余流列表将剩余树附加到添加树
             add_tree = self.appendBranchTree(add_tree, _rest_flowlist, rest_tree)
 
+        # 将需要插入的分支追加到主干上，并更新概率
         tree = reorder.reorder(
             self.appendBranchTree(current_tree, match_flowlist, add_tree))
 
+        # 检查目的地数量是否大于1
         if num_dst > 1:
+            # 如果需要，对树应用部分选择
             tree = reorder.reorder(
                 DFPartselect(tree, part_msb, part_lsb))
 
+        # 返回从最终树和给定参数构造的Bind对象
         return Bind(tree, name, msb, lsb, ptr, alwaysinfo, bindtype)
 
     def diffBranchTree(self, tree, condlist, flowlist, matchflowlist=()):
@@ -1520,8 +1830,9 @@ class BindVisitor(NodeVisitor):
             return (tree, condlist, flowlist, matchflowlist)
         if not isinstance(tree, DFBranch):
             return (tree, condlist, flowlist, matchflowlist)
-        if condlist[0] != tree.condnode:
+        if condlist[0] != tree.condnode:  # 如果 tree的 cond节点与 condlist第一项不一致，那说明tree从这里开始与 root产生了差异
             return (tree, condlist, flowlist, matchflowlist)
+        # 递归处理比较 tree与 root的差异，在matchflowlist中记录相同的分支
         if flowlist[0]:
             return self.diffBranchTree(
                 tree.truenode, condlist[1:], flowlist[1:],
@@ -1536,37 +1847,47 @@ class BindVisitor(NodeVisitor):
             return node
         if len(condlist) == 1:
             if flowlist[0]:
-                return DFBranch(condlist[0], node, None)
+                return DFBranch(condlist[0], node, None, probability=node.probability)
             else:
-                return DFBranch(condlist[0], None, node)
+                return DFBranch(condlist[0], None, node, probability=node.probability)
         else:
             if flowlist[0]:
+                truenode = self.makeBranchTree(condlist[1:], flowlist[1:], node)
                 return DFBranch(
                     condlist[0],
-                    self.makeBranchTree(condlist[1:], flowlist[1:], node),
-                    None)
+                    truenode,
+                    None
+                    , probability=truenode.probability)
             else:
+                falsenode = self.makeBranchTree(condlist[1:], flowlist[1:], node)
                 return DFBranch(
                     condlist[0],
                     None,
-                    self.makeBranchTree(condlist[1:], flowlist[1:], node))
+                    falsenode
+                    , probability=falsenode.probability)
+
+    def setCondNodeProbability(self):
+        pass
 
     def appendBranchTree(self, base, pos, tree):
-        if len(pos) == 0:
+        if len(pos) == 0:  # 当pos 参数为空 也就是 true或者 false分支都没有，说明子树tree就是根节点
             return tree
-        if len(pos) == 1:
+        if len(pos) == 1:  # 否则将子树tree追加到 base分支上
             if pos[0]:
-                return DFBranch(base.condnode, tree, base.falsenode)
+                return DFBranch(base.condnode, tree, base.falsenode, probability=tree.probability + base.falsenode.probability)
             else:
-                return DFBranch(base.condnode, base.truenode, tree)
+                return DFBranch(base.condnode, base.truenode, tree, probability=tree.probability + base.truenode.probability)
         else:
             if pos[0]:
+                truenode = self.appendBranchTree(base.truenode, pos[1:], tree)
                 return DFBranch(
                     base.condnode,
-                    self.appendBranchTree(base.truenode, pos[1:], tree),
-                    base.falsenode)
+                    truenode,
+                    base.falsenode, probability=base.falsenode.probability + truenode.probability )
             else:
+                falsenode = self.appendBranchTree(base.falsenode, pos[1:], tree)
                 return DFBranch(
                     base.condnode,
                     base.truenode,
-                    self.appendBranchTree(base.falsenode, pos[1:], tree))
+                    falsenode
+                ,probability=base.truenode.probability + falsenode.probability )

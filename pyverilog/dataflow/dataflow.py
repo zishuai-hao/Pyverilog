@@ -9,6 +9,7 @@
 # -------------------------------------------------------------------------------
 from __future__ import absolute_import
 from __future__ import print_function
+from fractions import Fraction
 import sys
 import os
 import re
@@ -42,11 +43,13 @@ import pyverilog.utils.util as util
 import pyverilog.utils.signaltype as signaltype
 import pyverilog.utils.op2mark as op2mark
 
-
+DEFAULT_PROB = Fraction(10,1)
 class DFNode(object):
     attr_names = ()
 
-    def __init__(self): pass
+    def __init__(self, lineno=0, probability=DEFAULT_PROB):
+        self.lineno = lineno
+        self.probability = probability
 
     def __repr__(self): pass
 
@@ -54,7 +57,11 @@ class DFNode(object):
 
     def tocode(self, dest='dest'): return self.__repr__()
 
-    def tolabel(self): return self.__repr__()
+    def tolabel(self):
+        if self.probability == Fraction(10,1):
+            print(f"{self.__repr__()}:{self.probability}")
+        return f"{self.__repr__()}:{self.probability}"
+    # def tolabel(self): return f"{self.__repr__()}"
 
     def children(self):
         nodelist = []
@@ -75,7 +82,8 @@ class DFNode(object):
 class DFTerminal(DFNode):
     attr_names = ('name',)
 
-    def __init__(self, name):
+    def __init__(self, name, lineno=0, probability=DEFAULT_PROB):
+        super(DFTerminal, self).__init__(lineno=lineno, probability=probability)
         self.name = name
 
     def __repr__(self):
@@ -116,7 +124,8 @@ class DFTerminal(DFNode):
 class DFConstant(DFNode):
     attr_names = ('value',)
 
-    def __init__(self, value):
+    def __init__(self, value, lineno=0, probability=DEFAULT_PROB):
+        super(DFConstant, self).__init__(lineno=lineno, probability=probability)
         self.value = value
 
     def __repr__(self):
@@ -143,8 +152,8 @@ class DFConstant(DFNode):
 
 
 class DFIntConst(DFConstant):
-    def __init__(self, value):
-        self.value = value
+    def __init__(self, value, lineno=0, probability=DEFAULT_PROB):
+        super(DFIntConst, self).__init__(value, lineno=lineno, probability=probability)
 
     def tostr(self):
         ret = '(IntConst ' + str(self.value) + ')'
@@ -188,8 +197,8 @@ class DFIntConst(DFConstant):
 
 
 class DFFloatConst(DFConstant):
-    def __init__(self, value):
-        self.value = value
+    def __init__(self, value, lineno=0, probability=DEFAULT_PROB):
+        super(DFFloatConst, self).__init__(value, lineno=lineno, probability=probability)
 
     def tostr(self):
         ret = '(FloatConst ' + str(self.value) + ')'
@@ -200,8 +209,8 @@ class DFFloatConst(DFConstant):
 
 
 class DFStringConst(DFConstant):
-    def __init__(self, value):
-        self.value = value
+    def __init__(self, value, lineno=0, probability=DEFAULT_PROB):
+        super(DFStringConst, self).__init__(value, lineno=lineno, probability=probability)
 
     def tostr(self):
         ret = '(StringConst ' + str(self.value) + ')'
@@ -218,7 +227,8 @@ class DFNotTerminal(DFNode):
 class DFOperator(DFNotTerminal):
     attr_names = ('operator',)
 
-    def __init__(self, nextnodes, operator):
+    def __init__(self, nextnodes, operator, lineno=0, probability=DEFAULT_PROB):
+        super(DFOperator, self).__init__(lineno=lineno, probability=probability)
         self.nextnodes = nextnodes
         self.operator = operator
 
@@ -266,7 +276,8 @@ class DFOperator(DFNotTerminal):
 class DFPartselect(DFNotTerminal):
     attr_names = ()
 
-    def __init__(self, var, msb, lsb):
+    def __init__(self, var, msb, lsb, lineno=0, probability=DEFAULT_PROB):
+        super(DFPartselect, self).__init__(lineno=lineno, probability=probability)
         self.var = var
         self.msb = msb
         self.lsb = lsb
@@ -315,7 +326,8 @@ class DFPartselect(DFNotTerminal):
 class DFPointer(DFNotTerminal):
     attr_names = ()
 
-    def __init__(self, var, ptr):
+    def __init__(self, var, ptr, lineno=0, probability=DEFAULT_PROB):
+        super(DFPointer, self).__init__(lineno=lineno, probability=probability)
         self.var = var
         self.ptr = ptr
 
@@ -354,7 +366,8 @@ class DFPointer(DFNotTerminal):
 class DFConcat(DFNotTerminal):
     attr_names = ()
 
-    def __init__(self, nextnodes):
+    def __init__(self, nextnodes, lineno=0, probability=DEFAULT_PROB):
+        super(DFConcat, self).__init__(lineno=lineno, probability=probability)
         self.nextnodes = nextnodes
 
     def __repr__(self):
@@ -394,7 +407,8 @@ class DFConcat(DFNotTerminal):
 class DFBranch(DFNotTerminal):
     attr_names = ()
 
-    def __init__(self, condnode, truenode, falsenode):
+    def __init__(self, condnode, truenode, falsenode, lineno=0, probability=DEFAULT_PROB):
+        super(DFBranch, self).__init__(lineno=lineno, probability=probability)
         self.condnode = condnode
         self.truenode = truenode
         self.falsenode = falsenode
@@ -482,7 +496,8 @@ class DFBranch(DFNotTerminal):
 class DFEvalValue(DFNode):
     attr_names = ('value', 'width',)
 
-    def __init__(self, value, width=32, isfloat=False, isstring=False):
+    def __init__(self, value, width=32, isfloat=False, isstring=False, lineno=0, probability=DEFAULT_PROB):
+        super(DFEvalValue, self).__init__(lineno=lineno, probability=probability)
         self.value = value
         self.width = width
         self.isfloat = isfloat
@@ -541,7 +556,8 @@ class DFEvalValue(DFNode):
 class DFUndefined(DFNode):
     attr_names = ('width',)
 
-    def __init__(self, width):
+    def __init__(self, width, lineno=0, probability=DEFAULT_PROB):
+        super(DFUndefined, self).__init__(lineno=lineno, probability=probability)
         self.width = width
 
     def __repr__(self):
@@ -576,7 +592,8 @@ class DFUndefined(DFNode):
 class DFHighImpedance(DFNode):
     attr_names = ('width',)
 
-    def __init__(self, width):
+    def __init__(self, width, lineno=0, probability=DEFAULT_PROB):
+        super(DFHighImpedance, self).__init__(lineno=lineno, probability=probability)
         self.width = width
 
     def __repr__(self):
@@ -611,7 +628,8 @@ class DFHighImpedance(DFNode):
 class DFDelay(DFNotTerminal):
     attr_names = ()
 
-    def __init__(self, nextnode):
+    def __init__(self, nextnode, lineno=0, probability=DEFAULT_PROB):
+        super(DFDelay, self).__init__(lineno=lineno, probability=probability)
         self.nextnode = nextnode
 
     def __repr__(self):
@@ -645,7 +663,8 @@ class DFDelay(DFNotTerminal):
 class DFSyscall(DFNotTerminal):
     attr_names = ()
 
-    def __init__(self, syscall, nextnodes):
+    def __init__(self, syscall, nextnodes, lineno=0, probability=DEFAULT_PROB):
+        super(DFSyscall, self).__init__(lineno=lineno, probability=probability)
         self.syscall = syscall
         self.nextnodes = nextnodes
 
@@ -975,7 +994,7 @@ class DataFlow(object):
     def hasTerm(self, name):
         return name in self.terms
 
-    def getTerm(self, name):
+    def getTerm(self, name) -> Term|None:
         if name in self.terms:
             return self.terms[name]
         return None

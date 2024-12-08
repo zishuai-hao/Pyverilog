@@ -13,6 +13,7 @@ import os
 import copy
 
 from pyverilog.dataflow.dataflow import *
+from pyverilog.utils.verror import FormatError, DefinitionError
 
 
 def reorder(tree):
@@ -35,7 +36,7 @@ def reorder(tree):
         condnode = reorder(tree.condnode)
         if isinstance(condnode, DFBranch):
             return insertBranch(condnode, truenode, falsenode)
-        return DFBranch(condnode, truenode, falsenode)
+        return DFBranch(condnode, truenode, falsenode, probability=tree.probability)
 
     if isinstance(tree, DFOperator):
         resolvednodes = []
@@ -44,7 +45,7 @@ def reorder(tree):
         for r in resolvednodes:
             if isinstance(r, DFBranch):
                 return insertOpList(resolvednodes, tree.operator)
-        return DFOperator(tuple(resolvednodes), tree.operator)
+        return DFOperator(tuple(resolvednodes), tree.operator, probability=tree.probability)
 
     if isinstance(tree, DFConcat):
         resolvednodes = []
@@ -53,7 +54,7 @@ def reorder(tree):
         for r in resolvednodes:
             if isinstance(r, DFBranch):
                 return insertConcat(resolvednodes)
-        return DFConcat(tuple(resolvednodes))
+        return DFConcat(tuple(resolvednodes) , probability=tree.probability)
 
     if isinstance(tree, DFPartselect):
         resolved_msb = reorder(tree.msb)
@@ -63,7 +64,7 @@ def reorder(tree):
             raise FormatError('MSB and LSB should not be DFBranch')
         if isinstance(resolved_var, DFBranch):
             return insertPartselect(resolved_var, resolved_msb, resolved_lsb)
-        return DFPartselect(resolved_var, resolved_msb, resolved_lsb)
+        return DFPartselect(resolved_var, resolved_msb, resolved_lsb , probability=tree.probability)
 
     if isinstance(tree, DFPointer):
         resolved_ptr = reorder(tree.ptr)
@@ -72,13 +73,13 @@ def reorder(tree):
             # raise FormatError('PTR should not be DFBranch')n
             return DFBranch(resolved_ptr.condnode,
                             reorder(DFPointer(resolved_var, resolved_ptr.truenode)),
-                            reorder(DFPointer(resolved_var, resolved_ptr.falsenode)))
+                            reorder(DFPointer(resolved_var, resolved_ptr.falsenode)), probability=tree.probability)
         if isinstance(resolved_var, DFBranch):
             return insertPointer(resolved_var, resolved_ptr)
-        return DFPointer(resolved_var, resolved_ptr)
+        return DFPointer(resolved_var, resolved_ptr , probability=tree.probability)
 
     if isinstance(tree, DFDelay):
-        return DFDelay(reorder(tree.nextnode))
+        return DFDelay(reorder(tree.nextnode) , probability=tree.probability)
 
     raise DefinitionError('Undefined DFNode type: %s %s' % (str(type(tree)), str(tree)))
 
@@ -94,7 +95,7 @@ def insertBranch(base, truenode, falsenode):
 def insertUnaryOp(base, op):
     if isinstance(base, DFBranch):
         return DFBranch(base.condnode, insertUnaryOp(base.truenode, op), insertUnaryOp(base.falsenode, op))
-    return DFOperator((base,), op)
+    return DFOperator((base,), op, probability=base.probability)
 
 
 def insertOp(left, right, op):

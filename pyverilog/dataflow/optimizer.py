@@ -8,13 +8,11 @@
 # -------------------------------------------------------------------------------
 from __future__ import absolute_import
 from __future__ import print_function
-import sys
-import os
+
 import math
 
-import pyverilog.utils.verror as verror
-import pyverilog.utils.signaltype as signaltype
 from pyverilog.dataflow.dataflow import *
+from pyverilog.utils.verror import FormatError
 
 
 class VerilogOptimizer(object):
@@ -72,7 +70,7 @@ class VerilogOptimizer(object):
                 if self.isCondTrue(condnode):
                     return truenode
                 return falsenode
-            return DFBranch(condnode, truenode, falsenode)
+            return DFBranch(condnode, truenode, falsenode, probability=tree.probability)
 
         if isinstance(tree, DFEvalValue):
             return tree
@@ -81,24 +79,24 @@ class VerilogOptimizer(object):
         if isinstance(tree, DFHighImpedance):
             return tree
         if isinstance(tree, DFDelay):
-            raise FormatError('Can not evaluate and optimize a DFDelay')
+            raise verror.FormatError('Can not evaluate and optimize a DFDelay')
             # return tree
 
-        if isinstance(tree, DFIntConst):
+        if isinstance(tree, DFIntConst):  # 数值解析
             if 'x' in tree.value or 'z' in tree.value:
-                return DFUndefined(tree.width())
+                return DFUndefined(tree.width(), probability=tree.probability)
             if 'X' in tree.value or 'Z' in tree.value:
-                return DFUndefined(tree.width())
-            return DFEvalValue(tree.eval(), tree.width())
+                return DFUndefined(tree.width(), probability=tree.probability)
+            return DFEvalValue(tree.eval(), tree.width(), probability=tree.probability)
         if isinstance(tree, DFFloatConst):
-            return DFEvalValue(tree.eval(), self.default_width, isfloat=True)
+            return DFEvalValue(tree.eval(), self.default_width, isfloat=True, probability=tree.probability)
         if isinstance(tree, DFStringConst):
-            return DFEvalValue(tree.eval(), None, isstring=True)
+            return DFEvalValue(tree.eval(), None, isstring=True, probability=tree.probability)
         if isinstance(tree, DFConstant):
             if 'x' in tree.value or 'z' in tree.value:
-                return DFUndefined()
+                return DFUndefined(probability=tree.probability)
             if 'X' in tree.value or 'Z' in tree.value:
-                return DFUndefined()
+                return DFUndefined(probability=tree.probability)
             return DFEvalValue(tree.eval(), self.default_width)
 
         if isinstance(tree, DFOperator):
@@ -106,8 +104,9 @@ class VerilogOptimizer(object):
             if all_const:
                 evalop = self.evalOperator(tree.operator, nextnodes_rslts)
                 if evalop is not None:
+                    evalop.probability = tree.probability
                     return evalop
-            return DFOperator(tuple(nextnodes_rslts), tree.operator)
+            return DFOperator(tuple(nextnodes_rslts), tree.operator, probability=tree.probability)
 
         if isinstance(tree, DFTerminal):
             if not self.hasConstant(tree.name):
@@ -121,15 +120,16 @@ class VerilogOptimizer(object):
                 lsb_val = self.optimizeConstant(lsb)
                 if isinstance(msb_val, DFEvalValue) and isinstance(lsb_val, DFEvalValue):
                     constwidth = msb_val.value - lsb_val.value + 1
-            return DFEvalValue(const.value, constwidth)
+            return DFEvalValue(const.value, constwidth, probability=tree.probability)
 
         if isinstance(tree, DFConcat):
             nextnodes_rslts, all_const = self.evalNextnodes(tree.nextnodes)
             if all_const:
                 evalcc = self.evalConcat(nextnodes_rslts)
                 if evalcc is not None:
+                    evalcc.probability = tree.probability
                     return evalcc
-            return DFConcat(tuple(nextnodes_rslts))
+            return DFConcat(tuple(nextnodes_rslts), probability=tree.probability)
 
         if isinstance(tree, DFPartselect):
             var = self.optimizeConstant(tree.var)
@@ -137,8 +137,9 @@ class VerilogOptimizer(object):
             lsb = self.optimizeConstant(tree.lsb)
             if isinstance(var, DFEvalValue) and isinstance(msb, DFEvalValue) and isinstance(msb, DFEvalValue):
                 evalcc = self.evalPartselect(var, msb, lsb)
+                evalcc.probability = tree.probability
                 return evalcc
-            return DFPartselect(var, msb, lsb)
+            return DFPartselect(var, msb, lsb, probability=tree.probability)
 
         if isinstance(tree, DFPointer):
             if not isinstance(tree.var, DFTerminal):
@@ -147,14 +148,16 @@ class VerilogOptimizer(object):
             var = self.optimizeConstant(tree.var)
             ptr = self.optimizeConstant(tree.ptr)
             if term.dims is not None:
-                return DFPointer(var, ptr)
+                return DFPointer(var, ptr, probability=tree.probability)
             if isinstance(var, DFEvalValue) and isinstance(ptr, DFEvalValue):
                 evalcc = self.evalPointer(var, ptr)
+                evalcc.probability = tree.probability
                 return evalcc
-            return DFPointer(var, ptr)
+            return DFPointer(var, ptr, probability=tree.probability)
 
         if isinstance(tree, DFSyscall):
-            return DFSyscall(tree.syscall, tuple([self.optimizeConstant(n) for n in tree.nextnodes]))
+            return DFSyscall(tree.syscall, tuple([self.optimizeConstant(n) for n in tree.nextnodes]),
+                             probability=tree.probability)
 
         raise verror.DefinitionError('Can not optimize the tree: %s %s' %
                                      (str(type(tree)), str(tree)))
@@ -341,7 +344,7 @@ class VerilogOptimizer(object):
                 width = abs(msb - lsb) + 1
                 return width
             return 1
-        if isinstance(tree, DFSyscall):
+        if isinstance(node, DFSyscall):
             return self.default_width
 
         raise FormatError('Illegal Pointer in getWidth()')
@@ -400,12 +403,12 @@ class VerilogOptimizer(object):
                 return falsenode
             if truenode == falsenode:
                 return truenode
-            return DFBranch(condnode, truenode, falsenode)
+            return DFBranch(condnode, truenode, falsenode, probability=tree.probability)
         if isinstance(tree, DFOperator):
             nextnodes = []
             for n in tree.nextnodes:
                 nextnodes.append(self.optimizeHierarchy(n))
-            ret = DFOperator(tuple(nextnodes), tree.operator)
+            ret = DFOperator(tuple(nextnodes), tree.operator, probability=tree.probability)
             ret = self.replaceOperator(ret)
             ret = self.mergeIdenticalNodes(ret)
             ret = self.mergeStaticNodes(ret)
@@ -417,7 +420,8 @@ class VerilogOptimizer(object):
             var = self.optimizeHierarchy(tree.var)
             if isinstance(var, DFConcat) and isinstance(msb, DFEvalValue) and isinstance(lsb, DFEvalValue):
                 return self.takePart(var.nextnodes, msb, lsb)
-            if isinstance(msb, DFEvalValue) and isinstance(lsb, DFEvalValue) and lsb.value == 0 and self.getWidth(var) == (msb.value + 1):
+            if isinstance(msb, DFEvalValue) and isinstance(lsb, DFEvalValue) and lsb.value == 0 and self.getWidth(
+                    var) == (msb.value + 1):
                 return var
             return DFPartselect(var, msb, lsb)
         if isinstance(tree, DFPointer):
@@ -425,7 +429,7 @@ class VerilogOptimizer(object):
             var = self.optimizeHierarchy(tree.var)
             if isinstance(var, DFConcat) and isinstance(ptr, DFEvalValue):
                 return self.takePoint(var.nextnodes, ptr)
-            return DFPointer(var, ptr)
+            return DFPointer(var, ptr, probability=tree.probability)
         if isinstance(tree, DFConcat):
             nextnodes = []
             for n in tree.nextnodes:
@@ -433,9 +437,10 @@ class VerilogOptimizer(object):
                     nextnodes.extend(n.nextnodes)
                     continue
                 nextnodes.append(self.optimizeHierarchy(n))
-            return self.mergeConcat(DFConcat(tuple(nextnodes)))
+            return self.mergeConcat(DFConcat(tuple(nextnodes), probability=tree.probability))
         if isinstance(tree, DFSyscall):
-            return DFSyscall(tree.syscall, tuple([self.optimizeHierarchy(n) for n in tree.nextnodes]))
+            return DFSyscall(tree.syscall, tuple([self.optimizeHierarchy(n) for n in tree.nextnodes]),
+                             probability=tree.probability)
 
         raise FormatError('Can not merge due to unrecognized type of tree')
 
@@ -482,8 +487,11 @@ class VerilogOptimizer(object):
             if lsboffset == 0:
                 return DFConcat((DFUndefined(cutwidth - widsum),) + tuple(usednodes))
             if len(usednodes) == 1:
-                return DFConcat((DFUndefined(cutwidth - widsum + lsboffset), DFPartselect(usednodes[0], DFEvalValue(widsum - 1), DFEvalValue(lsb + lsboffset))))
-            return DFConcat((DFUndefined(cutwidth - widsum + lsboffset), DFPartselect(DFConcat(tuple(usednodes)), DFEvalValue(widsum - 1), DFEvalValue(lsb + lsboffset))))
+                return DFConcat((DFUndefined(cutwidth - widsum + lsboffset),
+                                 DFPartselect(usednodes[0], DFEvalValue(widsum - 1), DFEvalValue(lsb + lsboffset))))
+            return DFConcat((DFUndefined(cutwidth - widsum + lsboffset),
+                             DFPartselect(DFConcat(tuple(usednodes)), DFEvalValue(widsum - 1),
+                                          DFEvalValue(lsb + lsboffset))))
         if lsboffset == 0 and msboffset == 0:
             if len(usednodes) == 1:
                 return usednodes[0]
@@ -523,20 +531,23 @@ class VerilogOptimizer(object):
         if not isinstance(node, DFOperator):
             return node
         if (node.operator == 'Times' and
-            (isinstance(node.nextnodes[1], DFEvalValue) and
-             isinstance(node.nextnodes[1].value, int) and
-             self._isPowerOf2(node.nextnodes[1].value))):
-            return DFOperator((node.nextnodes[0], DFEvalValue(int(math.log(node.nextnodes[1].value, 2)))), 'Sll')
-        if (node.operator == 'Times' and
-            (isinstance(node.nextnodes[0], DFEvalValue) and
-             isinstance(node.nextnodes[0].value, int) and
-             self._isPowerOf2(node.nextnodes[0].value))):
-            return DFOperator((node.nextnodes[1], DFEvalValue(int(math.log(node.nextnodes[0].value, 2)))), 'Sll')
-        if (node.operator == 'Divide'
-            and (isinstance(node.nextnodes[1], DFEvalValue) and
-             isinstance(node.nextnodes[1].value, int) and
+                (isinstance(node.nextnodes[1], DFEvalValue) and
+                 isinstance(node.nextnodes[1].value, int) and
                  self._isPowerOf2(node.nextnodes[1].value))):
-            return DFOperator((node.nextnodes[0], DFEvalValue(int(math.log(node.nextnodes[1].value, 2)))), 'Sra')
+            return DFOperator((node.nextnodes[0], DFEvalValue(int(math.log(node.nextnodes[1].value, 2)))), 'Sll',
+                              probability=node.probability)
+        if (node.operator == 'Times' and
+                (isinstance(node.nextnodes[0], DFEvalValue) and
+                 isinstance(node.nextnodes[0].value, int) and
+                 self._isPowerOf2(node.nextnodes[0].value))):
+            return DFOperator((node.nextnodes[1], DFEvalValue(int(math.log(node.nextnodes[0].value, 2)))), 'Sll',
+                              probability=node.probability)
+        if (node.operator == 'Divide'
+                and (isinstance(node.nextnodes[1], DFEvalValue) and
+                     isinstance(node.nextnodes[1].value, int) and
+                     self._isPowerOf2(node.nextnodes[1].value))):
+            return DFOperator((node.nextnodes[0], DFEvalValue(int(math.log(node.nextnodes[1].value, 2)))), 'Sra',
+                              probability=node.probability)
         return node
 
     def mergeConcat(self, concatnode):
@@ -670,24 +681,27 @@ class VerilogOptimizer(object):
         if node.operator == 'Lor':
             return node.nextnodes[0]
         if node.operator == 'LessThan':
-            return DFEvalValue(0, 1)  # value, width
+            return DFEvalValue(0, 1, probability=node.probability)  # value, width
         if node.operator == 'GreaterThan':
-            return DFEvalValue(0, 1)
+            return DFEvalValue(0, 1, probability=node.probability)
         if node.operator == 'LessEq':
-            return DFEvalValue(1, 1)
+            return DFEvalValue(1, 1, probability=node.probability)
         if node.operator == 'GreaterEq':
-            return DFEvalValue(1, 1)
+            return DFEvalValue(1, 1, probability=node.probability)
         if node.operator == 'Eq':
-            return DFEvalValue(1, 1)
+            return DFEvalValue(1, 1, probability=node.probability)
         if node.operator == 'NotEq':
-            return DFEvalValue(0, 1)
+            return DFEvalValue(0, 1, probability=node.probability)
         if node.operator == 'Eql':
-            return DFEvalValue(1, 1)
+            return DFEvalValue(1, 1, probability=node.probability)
         if node.operator == 'NotEql':
-            return DFEvalValue(0, 1)
+            return DFEvalValue(0, 1, probability=node.probability)
         return node
 
     def mergeStaticNodes(self, node):
+        """
+            常量计算：合并静态节点
+        """
         if not isinstance(node, DFOperator):
             return node
         if len(node.nextnodes) == 1:
@@ -698,25 +712,25 @@ class VerilogOptimizer(object):
 
         if node.operator == 'And':
             if isinstance(left, DFEvalValue) and left.value == 0:
-                return DFEvalValue(0, self.getWidth(node))
+                return DFEvalValue(0, self.getWidth(node), probability=node.probability)
             if isinstance(right, DFEvalValue) and right.value == 0:
-                return DFEvalValue(0, self.getWidth(node))
-            if isinstance(left, DFOperator) and left.operator == 'Unot'\
+                return DFEvalValue(0, self.getWidth(node), probability=node.probability)
+            if isinstance(left, DFOperator) and left.operator == 'Unot' \
                     and left.nextnodes[0] == right:
-                return DFEvalValue(0, self.getWidth(node))
-            if isinstance(right, DFOperator) and right.operator == 'Unot'\
+                return DFEvalValue(0, self.getWidth(node), probability=node.probability)
+            if isinstance(right, DFOperator) and right.operator == 'Unot' \
                     and right.nextnodes[0] == left:
-                return DFEvalValue(0, self.getWidth(node))
-            if isinstance(left, DFOperator) and left.operator == 'Ulnot'\
+                return DFEvalValue(0, self.getWidth(node), probability=node.probability)
+            if isinstance(left, DFOperator) and left.operator == 'Ulnot' \
                     and left.nextnodes[0] == right:
                 if self.getWidth(node) == 1:
-                    return DFEvalValue(0, 1)
+                    return DFEvalValue(0, 1, probability=node.probability)
                 else:
                     return node
-            if isinstance(right, DFOperator) and right.operator == 'Ulnot'\
+            if isinstance(right, DFOperator) and right.operator == 'Ulnot' \
                     and right.nextnodes[0] == left:
                 if self.getWidth(node) == 1:
-                    return DFEvalValue(0, 1)
+                    return DFEvalValue(0, 1, probability=node.probability)
                 else:
                     return node
             return node
@@ -725,110 +739,112 @@ class VerilogOptimizer(object):
                 return right
             if isinstance(right, DFEvalValue) and right.value == 0:
                 return left
-            if isinstance(left, DFOperator) and left.operator == 'Unot'\
+            if isinstance(left, DFOperator) and left.operator == 'Unot' \
                     and left.nextnodes[0] == right:
-                return DFEvalValue(self._evalOperator('Unot', [0, ], self.getWidth(node)), self.getWidth(node))
-            if isinstance(right, DFOperator) and right.operator == 'Unot'\
+                return DFEvalValue(self._evalOperator('Unot', [0, ], self.getWidth(node)), self.getWidth(node),
+                                   probability=node.probability)
+            if isinstance(right, DFOperator) and right.operator == 'Unot' \
                     and right.nextnodes[0] == left:
-                return DFEvalValue(self._evalOperator('Unot', [0, ], self.getWidth(node)), self.getWidth(node))
-            if isinstance(left, DFOperator) and left.operator == 'Ulnot'\
+                return DFEvalValue(self._evalOperator('Unot', [0, ], self.getWidth(node)), self.getWidth(node),
+                                   probability=node.probability)
+            if isinstance(left, DFOperator) and left.operator == 'Ulnot' \
                     and left.nextnodes[0] == right:
                 if self.getWidth(node) == 1:
-                    return DFEvalValue(1, 1)
+                    return DFEvalValue(1, 1, probability=node.probability)
                 else:
                     return node
-            if isinstance(right, DFOperator) and right.operator == 'Ulnot'\
+            if isinstance(right, DFOperator) and right.operator == 'Ulnot' \
                     and right.nextnodes[0] == left:
                 if self.getWidth(node) == 1:
-                    return DFEvalValue(1, 1)
+                    return DFEvalValue(1, 1, probability=node.probability)
                 else:
                     return node
             return node
         if node.operator == 'Land':
             if isinstance(left, DFEvalValue) and left.value == 0:
-                return DFEvalValue(0, 1)
+                return DFEvalValue(0, 1, probability=node.probability)
             if isinstance(right, DFEvalValue) and right.value == 0:
-                return DFEvalValue(0, 1)
+                return DFEvalValue(0, 1, probability=node.probability)
             if isinstance(left, DFEvalValue) and left.value > 0:
                 return right
             if isinstance(right, DFEvalValue) and right.value > 0:
                 return left
-            if isinstance(left, DFOperator) and left.operator == 'Unot'\
+            if isinstance(left, DFOperator) and left.operator == 'Unot' \
                     and left.nextnodes[0] == right:
                 if self.getWidth(node) == 1:
-                    return DFEvalValue(0, 1)
+                    return DFEvalValue(0, 1, probability=node.probability)
                 else:
                     return node
-            if isinstance(right, DFOperator) and right.operator == 'Unot'\
+            if isinstance(right, DFOperator) and right.operator == 'Unot' \
                     and right.nextnodes[0] == left:
                 if self.getWidth(node) == 1:
-                    return DFEvalValue(0, 1)
+                    return DFEvalValue(0, 1, probability=node.probability)
                 else:
                     return node
-            if isinstance(left, DFOperator) and left.operator == 'Ulnot'\
+            if isinstance(left, DFOperator) and left.operator == 'Ulnot' \
                     and left.nextnodes[0] == right:
-                return DFEvalValue(0, 1)
-            if isinstance(right, DFOperator) and right.operator == 'Ulnot'\
+                return DFEvalValue(0, 1, probability=node.probability)
+            if isinstance(right, DFOperator) and right.operator == 'Ulnot' \
                     and right.nextnodes[0] == left:
-                return DFEvalValue(0, 1)
-            if isinstance(left, DFOperator) and left.operator == 'Eq'\
-                    and isinstance(right, DFOperator) and right.operator == 'Eq'\
-                    and left.nextnodes[0] == right.nextnodes[0]\
-                    and isinstance(left.nextnodes[1], DFEvalValue)\
-                    and isinstance(right.nextnodes[1], DFEvalValue)\
+                return DFEvalValue(0, 1, probability=node.probability)
+            if isinstance(left, DFOperator) and left.operator == 'Eq' \
+                    and isinstance(right, DFOperator) and right.operator == 'Eq' \
+                    and left.nextnodes[0] == right.nextnodes[0] \
+                    and isinstance(left.nextnodes[1], DFEvalValue) \
+                    and isinstance(right.nextnodes[1], DFEvalValue) \
                     and left.nextnodes[1].value != right.nextnodes[1].value:
-                return DFEvalValue(0, 1)
-            if isinstance(left, DFOperator) and left.operator == 'Eq'\
-                    and isinstance(right, DFOperator) and right.operator == 'Eq'\
-                    and left.nextnodes[1] == right.nextnodes[1]\
-                    and isinstance(left.nextnodes[0], DFEvalValue)\
-                    and isinstance(right.nextnodes[0], DFEvalValue)\
+                return DFEvalValue(0, 1, probability=node.probability)
+            if isinstance(left, DFOperator) and left.operator == 'Eq' \
+                    and isinstance(right, DFOperator) and right.operator == 'Eq' \
+                    and left.nextnodes[1] == right.nextnodes[1] \
+                    and isinstance(left.nextnodes[0], DFEvalValue) \
+                    and isinstance(right.nextnodes[0], DFEvalValue) \
                     and left.nextnodes[0].value != right.nextnodes[0].value:
-                return DFEvalValue(0, 1)
-            if isinstance(left, DFOperator) and left.operator == 'Eq'\
-                    and isinstance(right, DFOperator) and right.operator == 'Eq'\
-                    and left.nextnodes[0] == right.nextnodes[1]\
-                    and isinstance(left.nextnodes[1], DFEvalValue)\
-                    and isinstance(right.nextnodes[0], DFEvalValue)\
+                return DFEvalValue(0, 1, probability=node.probability)
+            if isinstance(left, DFOperator) and left.operator == 'Eq' \
+                    and isinstance(right, DFOperator) and right.operator == 'Eq' \
+                    and left.nextnodes[0] == right.nextnodes[1] \
+                    and isinstance(left.nextnodes[1], DFEvalValue) \
+                    and isinstance(right.nextnodes[0], DFEvalValue) \
                     and left.nextnodes[1].value != right.nextnodes[0].value:
-                return DFEvalValue(0, 1)
-            if isinstance(left, DFOperator) and left.operator == 'Eq'\
-                    and isinstance(right, DFOperator) and right.operator == 'Eq'\
-                    and left.nextnodes[1] == right.nextnodes[0]\
-                    and isinstance(left.nextnodes[0], DFEvalValue)\
-                    and isinstance(right.nextnodes[1], DFEvalValue)\
+                return DFEvalValue(0, 1, probability=node.probability)
+            if isinstance(left, DFOperator) and left.operator == 'Eq' \
+                    and isinstance(right, DFOperator) and right.operator == 'Eq' \
+                    and left.nextnodes[1] == right.nextnodes[0] \
+                    and isinstance(left.nextnodes[0], DFEvalValue) \
+                    and isinstance(right.nextnodes[1], DFEvalValue) \
                     and left.nextnodes[0].value != right.nextnodes[1].value:
-                return DFEvalValue(0, 1)
-            if isinstance(left, DFOperator) and left.operator == 'Ulnot'\
-                    and isinstance(left.nextnodes[0], DFOperator) and left.nextnodes[0].operator == 'Eq'\
-                    and isinstance(right, DFOperator) and right.operator == 'Eq'\
-                    and left.nextnodes[0].nextnodes[0] == right.nextnodes[0]\
-                    and isinstance(left.nextnodes[0].nextnodes[1], DFEvalValue)\
-                    and isinstance(right.nextnodes[1], DFEvalValue)\
+                return DFEvalValue(0, 1, probability=node.probability)
+            if isinstance(left, DFOperator) and left.operator == 'Ulnot' \
+                    and isinstance(left.nextnodes[0], DFOperator) and left.nextnodes[0].operator == 'Eq' \
+                    and isinstance(right, DFOperator) and right.operator == 'Eq' \
+                    and left.nextnodes[0].nextnodes[0] == right.nextnodes[0] \
+                    and isinstance(left.nextnodes[0].nextnodes[1], DFEvalValue) \
+                    and isinstance(right.nextnodes[1], DFEvalValue) \
                     and left.nextnodes[0].nextnodes[1].value != right.nextnodes[1].value:
                 return right
-            if isinstance(left, DFOperator) and left.operator == 'Ulnot'\
-                    and isinstance(left.nextnodes[0], DFOperator) and left.nextnodes[0].operator == 'Eq'\
-                    and isinstance(right, DFOperator) and right.operator == 'Eq'\
-                    and left.nextnodes[0].nextnodes[1] == right.nextnodes[0]\
-                    and isinstance(left.nextnodes[0].nextnodes[0], DFEvalValue)\
-                    and isinstance(right.nextnodes[1], DFEvalValue)\
+            if isinstance(left, DFOperator) and left.operator == 'Ulnot' \
+                    and isinstance(left.nextnodes[0], DFOperator) and left.nextnodes[0].operator == 'Eq' \
+                    and isinstance(right, DFOperator) and right.operator == 'Eq' \
+                    and left.nextnodes[0].nextnodes[1] == right.nextnodes[0] \
+                    and isinstance(left.nextnodes[0].nextnodes[0], DFEvalValue) \
+                    and isinstance(right.nextnodes[1], DFEvalValue) \
                     and left.nextnodes[0].nextnodes[0].value != right.nextnodes[1].value:
                 return right
-            if isinstance(right, DFOperator) and right.operator == 'Ulnot'\
-                    and isinstance(right.nextnodes[0], DFOperator) and right.nextnodes[0].operator == 'Eq'\
-                    and isinstance(left, DFOperator) and left.operator == 'Eq'\
-                    and right.nextnodes[0].nextnodes[0] == left.nextnodes[0]\
-                    and isinstance(right.nextnodes[0].nextnodes[1], DFEvalValue)\
-                    and isinstance(left.nextnodes[1], DFEvalValue)\
+            if isinstance(right, DFOperator) and right.operator == 'Ulnot' \
+                    and isinstance(right.nextnodes[0], DFOperator) and right.nextnodes[0].operator == 'Eq' \
+                    and isinstance(left, DFOperator) and left.operator == 'Eq' \
+                    and right.nextnodes[0].nextnodes[0] == left.nextnodes[0] \
+                    and isinstance(right.nextnodes[0].nextnodes[1], DFEvalValue) \
+                    and isinstance(left.nextnodes[1], DFEvalValue) \
                     and right.nextnodes[0].nextnodes[1].value != left.nextnodes[1].value:
                 return left
-            if isinstance(right, DFOperator) and right.operator == 'Ulnot'\
-                    and isinstance(right.nextnodes[0], DFOperator) and right.nextnodes[0].operator == 'Eq'\
-                    and isinstance(left, DFOperator) and left.operator == 'Eq'\
-                    and right.nextnodes[0].nextnodes[1] == left.nextnodes[0]\
-                    and isinstance(right.nextnodes[0].nextnodes[0], DFEvalValue)\
-                    and isinstance(left.nextnodes[1], DFEvalValue)\
+            if isinstance(right, DFOperator) and right.operator == 'Ulnot' \
+                    and isinstance(right.nextnodes[0], DFOperator) and right.nextnodes[0].operator == 'Eq' \
+                    and isinstance(left, DFOperator) and left.operator == 'Eq' \
+                    and right.nextnodes[0].nextnodes[1] == left.nextnodes[0] \
+                    and isinstance(right.nextnodes[0].nextnodes[0], DFEvalValue) \
+                    and isinstance(left.nextnodes[1], DFEvalValue) \
                     and right.nextnodes[0].nextnodes[0].value != left.nextnodes[1].value:
                 return left
             return node
@@ -838,43 +854,43 @@ class VerilogOptimizer(object):
             if isinstance(right, DFEvalValue) and right.value == 0:
                 return left
             if isinstance(left, DFEvalValue) and left.value > 0:
-                return DFEvalValue(1, 1)
+                return DFEvalValue(1, 1, probability=node.probability)
             if isinstance(right, DFEvalValue) and right.value > 0:
-                return DFEvalValue(1, 1)
-            if isinstance(left, DFOperator) and left.operator == 'Unot'\
+                return DFEvalValue(1, 1, probability=node.probability)
+            if isinstance(left, DFOperator) and left.operator == 'Unot' \
                     and left.nextnodes[0] == right:
-                return DFEvalValue(1, 1)
-            if isinstance(right, DFOperator) and right.operator == 'Unot'\
+                return DFEvalValue(1, 1, probability=node.probability)
+            if isinstance(right, DFOperator) and right.operator == 'Unot' \
                     and right.nextnodes[0] == left:
-                return DFEvalValue(1, 1)
-            if isinstance(left, DFOperator) and left.operator == 'Ulnot'\
+                return DFEvalValue(1, 1, probability=node.probability)
+            if isinstance(left, DFOperator) and left.operator == 'Ulnot' \
                     and left.nextnodes[0] == right:
-                return DFEvalValue(1, 1)
-            if isinstance(right, DFOperator) and right.operator == 'Ulnot'\
+                return DFEvalValue(1, 1, probability=node.probability)
+            if isinstance(right, DFOperator) and right.operator == 'Ulnot' \
                     and right.nextnodes[0] == left:
-                return DFEvalValue(1, 1)
-            if isinstance(left, DFOperator) and left.operator == 'Land'\
-                    and isinstance(right, DFOperator) and right.operator == 'Land'\
-                    and isinstance(left.nextnodes[0], DFOperator) and left.nextnodes[0].operator == 'Ulnot'\
-                    and left.nextnodes[0].nextnodes[0] == right.nextnodes[0]\
+                return DFEvalValue(1, 1, probability=node.probability)
+            if isinstance(left, DFOperator) and left.operator == 'Land' \
+                    and isinstance(right, DFOperator) and right.operator == 'Land' \
+                    and isinstance(left.nextnodes[0], DFOperator) and left.nextnodes[0].operator == 'Ulnot' \
+                    and left.nextnodes[0].nextnodes[0] == right.nextnodes[0] \
                     and left.nextnodes[1] == right.nextnodes[1]:
                 return left.nextnodes[1]
-            if isinstance(left, DFOperator) and left.operator == 'Land'\
-                    and isinstance(right, DFOperator) and right.operator == 'Land'\
-                    and isinstance(left.nextnodes[1], DFOperator) and left.nextnodes[1].operator == 'Ulnot'\
-                    and left.nextnodes[1].nextnodes[0] == right.nextnodes[0]\
+            if isinstance(left, DFOperator) and left.operator == 'Land' \
+                    and isinstance(right, DFOperator) and right.operator == 'Land' \
+                    and isinstance(left.nextnodes[1], DFOperator) and left.nextnodes[1].operator == 'Ulnot' \
+                    and left.nextnodes[1].nextnodes[0] == right.nextnodes[0] \
                     and left.nextnodes[0] == right.nextnodes[1]:
                 return left.nextnodes[0]
-            if isinstance(right, DFOperator) and right.operator == 'Land'\
-                    and isinstance(left, DFOperator) and left.operator == 'Land'\
-                    and isinstance(right.nextnodes[0], DFOperator) and right.nextnodes[0].operator == 'Ulnot'\
-                    and right.nextnodes[0].nextnodes[0] == left.nextnodes[0]\
+            if isinstance(right, DFOperator) and right.operator == 'Land' \
+                    and isinstance(left, DFOperator) and left.operator == 'Land' \
+                    and isinstance(right.nextnodes[0], DFOperator) and right.nextnodes[0].operator == 'Ulnot' \
+                    and right.nextnodes[0].nextnodes[0] == left.nextnodes[0] \
                     and right.nextnodes[1] == left.nextnodes[1]:
                 return right.nextnodes[1]
-            if isinstance(right, DFOperator) and right.operator == 'Land'\
-                    and isinstance(left, DFOperator) and left.operator == 'Land'\
-                    and isinstance(right.nextnodes[1], DFOperator) and right.nextnodes[1].operator == 'Ulnot'\
-                    and right.nextnodes[1].nextnodes[0] == left.nextnodes[0]\
+            if isinstance(right, DFOperator) and right.operator == 'Land' \
+                    and isinstance(left, DFOperator) and left.operator == 'Land' \
+                    and isinstance(right.nextnodes[1], DFOperator) and right.nextnodes[1].operator == 'Ulnot' \
+                    and right.nextnodes[1].nextnodes[0] == left.nextnodes[0] \
                     and right.nextnodes[0] == left.nextnodes[1]:
                 return right.nextnodes[0]
             return node
@@ -891,7 +907,7 @@ class VerilogOptimizer(object):
                 if retnode is None:
                     retnode = r
                 else:
-                    retnode = DFOperator((retnode, r), 'Land')
+                    retnode = DFOperator((retnode, r), 'Land', probability=node.probability)
             return retnode
         return ret
 
@@ -916,9 +932,9 @@ class VerilogOptimizer(object):
         for l in landlist:
             s = l
             not_s = l.nextnodes[0] if isinstance(
-                l, DFOperator) and l.operator == 'Ulnot' else DFOperator((l,), 'Ulnot')
+                l, DFOperator) and l.operator == 'Ulnot' else DFOperator((l,), 'Ulnot', probability=node.probability)
             if not_s in ret_exist_list:
-                return (DFEvalValue(0, 1),)
+                return (DFEvalValue(0, 1, probability=node.probability),)
             if not (s in ret_exist_list):
                 ret_list.append(l)
                 ret_exist_list.append(s)
@@ -932,7 +948,7 @@ class VerilogOptimizer(object):
                 if retnode is None:
                     retnode = r
                 else:
-                    retnode = DFOperator((retnode, r), 'Lor')
+                    retnode = DFOperator((retnode, r), 'Lor', probability=node.probability)
             return retnode
         return ret
 
@@ -958,14 +974,15 @@ class VerilogOptimizer(object):
         ret_exist_list = []
         for l in landlist:
             s = l
-            not_s = l.nextnodes[0] if isinstance(
-                l, DFOperator) and l.operator == 'Ulnot' else DFOperator((l,), 'Ulnot')
+            not_s = l.nextnodes[0] if (isinstance(l, DFOperator) and l.operator == 'Ulnot') \
+                else DFOperator((l,), 'Ulnot', probability=node.probability)
             if not_s in ret_exist_list:
-                return (DFEvalValue(1, 1),)
+                return (DFEvalValue(1, 1, probability=node.probability),)
             if not (s in ret_exist_list):
                 ret_list.append(l)
                 ret_exist_list.append(s)
         return tuple(sorted(ret_list, key=lambda x: x.tocode(), reverse=True))
+
 
 # -------------------------------------------------------------------------------
 
