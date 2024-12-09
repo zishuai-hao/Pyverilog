@@ -759,7 +759,8 @@ class BindVisitor(NodeVisitor):
         self.addBind(node.left, node.right, bindtype='assign')
 
     def visit_BlockingSubstitution(self, node):
-        self.addBind(node.left, node.right, self.frames.getAlwaysStatus(), 'blocking')
+        # self.addBind(node.left, node.right, self.frames.getAlwaysStatus(), 'blocking')
+        self.addBind(node.left, node.right, self.frames.getAlwaysStatus(), 'nonblocking')
 
     def visit_NonblockingSubstitution(self, node):
         if self.frames.isForpre() or self.frames.isForpost():
@@ -1689,7 +1690,7 @@ class BindVisitor(NodeVisitor):
                              part_msb, part_lsb, alwaysinfo):
         tree = raw_tree
         if len(dst) > 1:
-            tree = reorder.reorder(DFPartselect(raw_tree, part_msb, part_lsb))
+            tree = reorder.reorder(DFPartselect(raw_tree, part_msb, part_lsb, probability= raw_tree.probability))
         bind = Bind(tree, name, msb, lsb, ptr, alwaysinfo)
         self.frames.addNonblockingAssign(name, bind)
 
@@ -1715,7 +1716,7 @@ class BindVisitor(NodeVisitor):
             tree = raw_tree
             if len(renamed_dst) > 1:
                 tree = reorder.reorder(
-                    DFPartselect(tree, part_msb, part_lsb))
+                    DFPartselect(tree, part_msb, part_lsb, probability=tree.probability))
             bind = Bind(tree, name, msb, lsb, ptr)
             self.dataflow.addBind(name, bind)
 
@@ -1820,7 +1821,7 @@ class BindVisitor(NodeVisitor):
         if num_dst > 1:
             # 如果需要，对树应用部分选择
             tree = reorder.reorder(
-                DFPartselect(tree, part_msb, part_lsb))
+                DFPartselect(tree, part_msb, part_lsb, probability=tree.probability))
 
         # 返回从最终树和给定参数构造的Bind对象
         return Bind(tree, name, msb, lsb, ptr, alwaysinfo, bindtype)
@@ -1879,15 +1880,18 @@ class BindVisitor(NodeVisitor):
                 return DFBranch(base.condnode, base.truenode, tree, probability=tree.probability + base.truenode.probability)
         else:
             if pos[0]:
+                base_falsenode_probability = 0 if base.falsenode is None else base.falsenode.probability
                 truenode = self.appendBranchTree(base.truenode, pos[1:], tree)
                 return DFBranch(
                     base.condnode,
                     truenode,
-                    base.falsenode, probability=base.falsenode.probability + truenode.probability )
+                    base.falsenode, probability=base_falsenode_probability + truenode.probability )
             else:
+                base_truenode_probability = 0 if base.truenode is None else base.truenode.probability
+
                 falsenode = self.appendBranchTree(base.falsenode, pos[1:], tree)
                 return DFBranch(
                     base.condnode,
                     base.truenode,
                     falsenode
-                ,probability=base.truenode.probability + falsenode.probability )
+                ,probability=base_truenode_probability + falsenode.probability )
