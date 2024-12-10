@@ -434,9 +434,9 @@ class VerilogDataflowMerge(object):
             left_msb = msb.value
             left_width = msb.value - splitpos + 1
             right_tree = reorder.reorder(DFPartselect(copy.deepcopy(
-                tree), DFEvalValue(right_width - 1), DFEvalValue(0)))
+                tree), DFEvalValue(right_width - 1), DFEvalValue(0), probability=tree.probability))
             left_tree = reorder.reorder(DFPartselect(copy.deepcopy(tree), DFEvalValue(
-                msb.value), DFEvalValue(msb.value - left_width + 1)))
+                msb.value), DFEvalValue(msb.value - left_width + 1), probability=tree.probability))
             right_tree = self.optimizer.optimize(right_tree)
             left_tree = self.optimizer.optimize(left_tree)
             left_bind = copy.deepcopy(bind)

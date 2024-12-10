@@ -423,7 +423,7 @@ class VerilogOptimizer(object):
             if isinstance(msb, DFEvalValue) and isinstance(lsb, DFEvalValue) and lsb.value == 0 and self.getWidth(
                     var) == (msb.value + 1):
                 return var
-            return DFPartselect(var, msb, lsb)
+            return DFPartselect(var, msb, lsb, probability=var.probability)
         if isinstance(tree, DFPointer):
             ptr = self.optimizeHierarchy(tree.ptr)
             var = self.optimizeHierarchy(tree.var)
@@ -488,7 +488,7 @@ class VerilogOptimizer(object):
                 return DFConcat((DFUndefined(cutwidth - widsum),) + tuple(usednodes))
             if len(usednodes) == 1:
                 return DFConcat((DFUndefined(cutwidth - widsum + lsboffset),
-                                 DFPartselect(usednodes[0], DFEvalValue(widsum - 1), DFEvalValue(lsb + lsboffset))))
+                                 DFPartselect(usednodes[0], DFEvalValue(widsum - 1), DFEvalValue(lsb + lsboffset), probability=usednodes[0].probability)))
             return DFConcat((DFUndefined(cutwidth - widsum + lsboffset),
                              DFPartselect(DFConcat(tuple(usednodes)), DFEvalValue(widsum - 1),
                                           DFEvalValue(lsb + lsboffset))))
