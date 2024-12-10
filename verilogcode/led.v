@@ -9,7 +9,7 @@ module led #
    );
   
   reg [31:0] count;
-  
+
   always @(posedge CLK) begin
     if(RST) begin
       count <= 0;

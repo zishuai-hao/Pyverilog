@@ -1,4 +1,4 @@
-module TOP(CLK, RST, reg1, OUT);
+module top(CLK, RST, reg1, OUT);
   input CLK, RST;
   reg [1:0] reg1;
   reg [6:4] reg3;
@@ -9,7 +9,7 @@ module TOP(CLK, RST, reg1, OUT);
   assign in1[2:1] = reg3[6:5];
 
   always @(posedge CLK or negedge RST) begin
-    reg1 <= in1[2:1];
+    reg1 <= r[2:1];
   end
 
   always @(posedge CLK or negedge RST) begin
