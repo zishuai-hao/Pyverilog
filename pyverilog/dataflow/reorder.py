@@ -130,10 +130,10 @@ def insertConcat(nextnodes):
 
 def insertPartselect(var, msb, lsb):
     if isinstance(var, DFBranch):
-        return DFBranch(var.condnode, insertPartselect(var.truenode, msb, lsb), insertPartselect(var.falsenode, msb, lsb))
+        return DFBranch(var.condnode, insertPartselect(var.truenode, msb, lsb), insertPartselect(var.falsenode, msb, lsb), probability=var.probability)
     if var is None:
         return None
-    return DFPartselect(var, msb, lsb)
+    return DFPartselect(var, msb, lsb, probability=var.probability)
 
 
 def insertPointer(var, ptr):

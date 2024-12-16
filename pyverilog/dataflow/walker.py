@@ -84,13 +84,13 @@ class VerilogDataflowWalker(VerilogDataflowMerge):
             condnode = self.walkTree(tree.condnode, visited, step, delay)
             truenode = self.walkTree(tree.truenode, visited, step, delay)
             falsenode = self.walkTree(tree.falsenode, visited, step, delay)
-            return DFBranch(condnode, truenode, falsenode, tree.probability)
+            return DFBranch(condnode, truenode, falsenode, probability=tree.probability)
 
         if isinstance(tree, DFOperator):
             nextnodes = []
             for n in tree.nextnodes:
                 nextnodes.append(self.walkTree(n, visited, step, delay))
-            return DFOperator(tuple(nextnodes), tree.operator, tree.probability)
+            return DFOperator(tuple(nextnodes), tree.operator, probability=tree.probability)
 
         if isinstance(tree, DFPartselect):
             msb = self.walkTree(tree.msb, visited, step, delay)
@@ -98,8 +98,8 @@ class VerilogDataflowWalker(VerilogDataflowMerge):
             var = self.walkTree(tree.var, visited, step, delay, msb=msb, lsb=lsb)
             if isinstance(var, DFPartselect):
                 child_lsb = self.getTerm(str(tree.var)).lsb.eval()
-                return DFPartselect(var.var, DFIntConst(str(msb.eval() + var.lsb.eval() - child_lsb)),
-                                    DFIntConst(str(lsb.eval() + var.lsb.eval() - child_lsb)), probability = tree.probability)
+                return DFPartselect(var.var, DFIntConst(str(msb.eval() + var.lsb.eval() - child_lsb), probability=tree.probability),
+                                    DFIntConst(str(lsb.eval() + var.lsb.eval() - child_lsb), probability=tree.probability), probability = tree.probability)
             return DFPartselect(var, msb, lsb, probability = tree.probability)
 
         if isinstance(tree, DFPointer):
@@ -109,13 +109,13 @@ class VerilogDataflowWalker(VerilogDataflowMerge):
                 if (self.getTermDims(tree.var.name) is not None and
                         not (isinstance(var, DFTerminal) and var.name == tree.var.name)):
                     return var
-            return DFPointer(var, ptr)
+            return DFPointer(var, ptr, probability=tree.probability)
 
         if isinstance(tree, DFConcat):
             nextnodes = []
             for n in tree.nextnodes:
                 nextnodes.append(self.walkTree(n, visited, step, delay))
-            return DFConcat(tuple(nextnodes))
+            return DFConcat(tuple(nextnodes), probability=tree.probability)
 
         raise verror.DefinitionError(
             'Undefined Node Type: %s : %s' % (str(type(tree)), str(tree)))

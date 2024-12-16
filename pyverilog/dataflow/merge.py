@@ -11,8 +11,6 @@ from __future__ import print_function
 import sys
 import os
 
-import pyverilog.utils.verror as verror
-import pyverilog.utils.signaltype as signaltype
 import pyverilog.dataflow.reorder as reorder
 from pyverilog.dataflow.dataflow import *
 from pyverilog.dataflow.visit import *
@@ -110,6 +108,9 @@ class VerilogDataflowMerge(object):
     def getTree(self, termname, ptr=None):
         bindlist = self.getResolvedBindlist(termname)
         bindlist = self.getOptimizedBindlist(bindlist)
+        if bindlist[0].tree.probability == 10:
+            print(bindlist[0])
+            raise Error
         if bindlist is None:
             return None
         if len(bindlist) == 0:
@@ -154,7 +155,7 @@ class VerilogDataflowMerge(object):
 
         if len(bindlist) == 1:
             return bindlist[0].tree
-        new_tree = self.getMergedTree(bindlist)
+        new_tree = self.getMergedTree(bindlist) # 对于一个 信号有多个绑定时，需要合并这些连接
         return self.optimizer.optimize(new_tree)
 
     def getResolvedTree(self, termname, ptr=None):
@@ -294,11 +295,11 @@ class VerilogDataflowMerge(object):
             if last_ptr != (-1 if not isinstance(bind.ptr, DFEvalValue) else bind.ptr.value):
                 continue
             if last_msb + 1 < lsb:
-                concatlist.append(DFUndefined(last_msb - lsb - 1))
+                concatlist.append(DFUndefined(last_msb - lsb - 1, probability=concatnode.probability))
             concatlist.append(bind.tree)
             last_msb = -1 if bind.msb is None else bind.msb.value
             last_ptr = -1 if not isinstance(bind.ptr, DFEvalValue) else bind.ptr.value
-        return DFConcat(tuple(reversed(concatlist)))
+        return DFConcat(tuple(reversed(concatlist)), probability=concatlist[0].probability)
 
     def getOptimizedBindlist(self, bindlist):
         if len(bindlist) == 0:
@@ -343,8 +344,9 @@ class VerilogDataflowMerge(object):
             elif last_bind.lsb is None or bind.lsb is None or last_bind is None or bind.msb is None:
                 merged_bindlist.append(copy.deepcopy(bind))
                 last_bind = copy.deepcopy(bind)
-            elif last_bind.lsb.value == bind.lsb.value and last_bind.msb.value == bind.msb.value:
+            elif last_bind.lsb.value == bind.lsb.value and last_bind.msb.value == bind.msb.value: # 如果两个 bind 都给同一个信号的同一个位宽范围赋值
                 new_tree = self.mergeTree(last_bind.tree, bind.tree)
+                new_tree.probability = (new_tree.truenode.probability if new_tree.truenode else 0) + (new_tree.falsenode.probability if new_tree.falsenode else 0)
                 new_tree = self.optimizer.optimize(new_tree)
                 merged_bindlist.pop()
                 new_bind = copy.deepcopy(bind)
@@ -434,19 +436,19 @@ class VerilogDataflowMerge(object):
             left_msb = msb.value
             left_width = msb.value - splitpos + 1
             right_tree = reorder.reorder(DFPartselect(copy.deepcopy(
-                tree), DFEvalValue(right_width - 1), DFEvalValue(0), probability=tree.probability))
+                tree), DFEvalValue(right_width - 1, probability=tree.probability), DFEvalValue(0, probability=tree.probability ), probability=tree.probability))
             left_tree = reorder.reorder(DFPartselect(copy.deepcopy(tree), DFEvalValue(
-                msb.value), DFEvalValue(msb.value - left_width + 1), probability=tree.probability))
+                msb.value, probability=tree.probability), DFEvalValue(msb.value - left_width + 1, probability=tree.probability), probability=tree.probability))
             right_tree = self.optimizer.optimize(right_tree)
             left_tree = self.optimizer.optimize(left_tree)
             left_bind = copy.deepcopy(bind)
             left_bind.tree = left_tree
-            left_bind.msb = DFEvalValue(left_msb)
-            left_bind.lsb = DFEvalValue(left_lsb)
+            left_bind.msb = DFEvalValue(left_msb, probability=tree.probability)
+            left_bind.lsb = DFEvalValue(left_lsb, probability=tree.probability)
             right_bind = copy.deepcopy(bind)
             right_bind.tree = right_tree
-            right_bind.msb = DFEvalValue(right_msb)
-            right_bind.lsb = DFEvalValue(right_lsb)
+            right_bind.msb = DFEvalValue(right_msb, probability=tree.probability)
+            right_bind.lsb = DFEvalValue(right_lsb, probability=tree.probability)
             return left_bind, right_bind
         return bind, None
 
@@ -458,7 +460,7 @@ class VerilogDataflowMerge(object):
             ptr = self.optimizer.optimizeConstant(bind.ptr)
             msb = self.optimizer.optimizeConstant(bind.msb)
             lsb = self.optimizer.optimizeConstant(bind.lsb)
-            if msb is None and lsb is None:
+            if msb is None and lsb is None: # 如果没有指明范围，则提取默认的范围。
                 term = self.getTerm(bind.dest)
                 msb = self.optimizer.optimizeConstant(term.msb)
                 lsb = self.optimizer.optimizeConstant(term.lsb)

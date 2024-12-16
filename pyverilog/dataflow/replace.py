@@ -19,7 +19,7 @@ def replaceUndefined(tree, termname):
     if tree is None:
         return DFTerminal(termname)
     if isinstance(tree, DFUndefined):
-        return DFTerminal(termname)
+        return DFTerminal(termname, probability=tree.probability)
     # if isinstance(tree, DFHighImpedance): return DFTerminal(termname)
     if isinstance(tree, DFConstant):
         return tree

@@ -125,9 +125,8 @@ class VerilogOptimizer(object):
         if isinstance(tree, DFConcat):
             nextnodes_rslts, all_const = self.evalNextnodes(tree.nextnodes)
             if all_const:
-                evalcc = self.evalConcat(nextnodes_rslts)
+                evalcc = self.evalConcat(nextnodes_rslts, tree.probability)
                 if evalcc is not None:
-                    evalcc.probability = tree.probability
                     return evalcc
             return DFConcat(tuple(nextnodes_rslts), probability=tree.probability)
 
@@ -349,14 +348,14 @@ class VerilogOptimizer(object):
 
         raise FormatError('Illegal Pointer in getWidth()')
 
-    def evalConcat(self, nextnodes):
+    def evalConcat(self, nextnodes,probability):
         concatval = 0
         sum_width = 0
         for node in nextnodes:
             width = self.getWidth(node)
             sum_width += width
             concatval = (concatval << width) | node.value
-        return DFEvalValue(concatval, sum_width)
+        return DFEvalValue(concatval, sum_width, probability=probability)
 
     def isCondTrue(self, cond):
         if not isinstance(cond, DFEvalValue):
@@ -569,14 +568,14 @@ class VerilogOptimizer(object):
         for n in concatnode.nextnodes:
             if isinstance(n, DFEvalValue):
                 constvallist.append(n)
-                constval = self.evalConcat(tuple(constvallist))
+                constval = self.evalConcat(tuple(constvallist), concatnode.probability)
                 if len(constvallist) > 1:
                     ret_nodes.pop()
                 ret_nodes.append(constval)
             else:
                 constvallist = []
                 ret_nodes.append(n)
-        return DFConcat(tuple(ret_nodes))
+        return DFConcat(tuple(ret_nodes), probability=concatnode.probability)
 
     def mergeConcat_undefined(self, concatnode):
         ret_nodes = []
@@ -586,11 +585,11 @@ class VerilogOptimizer(object):
                 if width > 0:
                     ret_nodes.pop()
                 width += self.getWidth(n)
-                ret_nodes.append(DFUndefined(width))
+                ret_nodes.append(DFUndefined(width, probability=concatnode.probability))
             else:
                 width = 0
                 ret_nodes.append(n)
-        return DFConcat(tuple(ret_nodes))
+        return DFConcat(tuple(ret_nodes),probability=concatnode.probability)
 
     def mergeConcat_partselect(self, concatnode):
         ret_nodes = []
@@ -610,7 +609,7 @@ class VerilogOptimizer(object):
                 pass
             elif last_node.lsb.value == n.msb.value + 1:
                 ret_nodes.pop()
-                new_node = DFPartselect(last_node.var, last_node.msb, n.lsb)
+                new_node = DFPartselect(last_node.var, last_node.msb, n.lsb, probability=n.probability)
                 if self.getWidth(last_node.var) == (last_node.msb.value - n.lsb.value + 1):
                     new_node = last_node.var
                 ret_nodes.append(new_node)
@@ -620,7 +619,7 @@ class VerilogOptimizer(object):
             last_node = n
         if len(ret_nodes) == 1:
             return ret_nodes[0]
-        return DFConcat(tuple(ret_nodes))
+        return DFConcat(tuple(ret_nodes), probability=concatnode.probability)
 
     def mergeConcat_branch(self, concatnode):
         nodelist = []
@@ -632,7 +631,7 @@ class VerilogOptimizer(object):
                 pass
             elif not isinstance(n, DFBranch):
                 pass
-            elif last_node.condnode == n.condnode:
+            elif last_node.condnode == n.condnode: # 当两个条件节点一致，进行合并
                 truenode_list = (last_node.truenode, n.truenode)
                 falsenode_list = (last_node.falsenode, n.falsenode)
                 new_truenode_list = []
@@ -640,7 +639,7 @@ class VerilogOptimizer(object):
                 pos = 0
                 for t in truenode_list:
                     if t is None:
-                        new_truenode_list.append(DFUndefined(self.getWidth(falsenode_list[pos])))
+                        new_truenode_list.append(DFUndefined(self.getWidth(falsenode_list[pos]),probability=last_node.condnode.probability))
                     else:
                         new_truenode_list.append(t)
                     pos += 1
@@ -648,13 +647,13 @@ class VerilogOptimizer(object):
                 pos = 0
                 for f in falsenode_list:
                     if f is None:
-                        new_falsenode_list.append(DFUndefined(self.getWidth(truenode_list[pos])))
+                        new_falsenode_list.append(DFUndefined(self.getWidth(truenode_list[pos]),probability=last_node.condnode.probability))
                     else:
                         new_falsenode_list.append(f)
                     pos += 1
 
                 new_node = DFBranch(last_node.condnode, DFConcat(
-                    tuple(new_truenode_list)), DFConcat(tuple(new_falsenode_list)))
+                    tuple(new_truenode_list),probability=last_node.condnode.probability), DFConcat(tuple(new_falsenode_list),probability=last_node.condnode.probability),probability=last_node.condnode.probability)
                 last_node = new_node
                 nodelist.pop()
                 nodelist.append(new_node)
@@ -663,7 +662,7 @@ class VerilogOptimizer(object):
             last_node = n
         if len(nodelist) == 1:
             return nodelist[0]
-        return DFConcat(tuple(nodelist))
+        return DFConcat(tuple(nodelist), probability=concatnode.probability)
 
     def mergeIdenticalNodes(self, node):
         if not isinstance(node, DFOperator):

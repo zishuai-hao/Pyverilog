@@ -278,8 +278,8 @@ class BindVisitor(NodeVisitor):
             return
 
         if (self.frames.isGenerate() and
-            not self.frames.isAlways() and not self.frames.isInitial() and
-            not self.frames.isFunctioncall() and not self.frames.isTaskcall() and
+                not self.frames.isAlways() and not self.frames.isInitial() and
+                not self.frames.isFunctioncall() and not self.frames.isTaskcall() and
                 not self.frames.isFunctiondef() and not self.frames.isTaskdef()):
             # generate-if statement
             current = self.frames.getCurrent()
@@ -400,15 +400,24 @@ class BindVisitor(NodeVisitor):
         if isinstance(cond_node, Unot):
             return self.computerProbability(cond_node.right, scope)
 
-        if isinstance(cond_node, Operator):  # EQ
-            left_df = self.makeDFTree(cond_node.left, scope)
-            right_df = self.makeDFTree(cond_node.right, scope)
-            if isinstance(left_df, DFBranch) or isinstance(right_df, DFBranch):
-                return reorder.insertOp(left_df, right_df, cond_node.__class__.__name__)
-            return DFOperator((left_df, right_df,), cond_node.__class__.__name__)
+        if isinstance(cond_node, Pointer):
+            var_df = self.makeDFTree(cond_node.var, scope)
+            ptr_df = self.makeDFTree(cond_node.ptr, scope)
+            # self.dataflow.getTerm(var_df.name)
+            if isinstance(ptr_df, DFIntConst):
+                return Fraction(1, pow(2, int(ptr_df.value) - int(ptr_df.value) + 1))
 
-        if isinstance(cond_node, IntConst):
-            return DFIntConst(cond_node.value)
+            raise NotImplemented
+
+        # if isinstance(cond_node, Operator):  # EQ
+        #     left_df = self.makeDFTree(cond_node.left, scope)
+        #     right_df = self.makeDFTree(cond_node.right, scope)
+        #     if isinstance(left_df, DFBranch) or isinstance(right_df, DFBranch):
+        #         return reorder.insertOp(left_df, right_df, cond_node.__class__.__name__)
+        #     return DFOperator((left_df, right_df,), cond_node.__class__.__name__)
+
+        # if isinstance(cond_node, IntConst):
+        #     return DFIntConst(cond_node.value)
 
         # region # 暂时不处理
 
@@ -438,14 +447,7 @@ class BindVisitor(NodeVisitor):
         #         return reorder.insertPartselect(var_df, msb_df, lsb_df)
         #     return DFPartselect(var_df, msb_df, lsb_df)
         #
-        # if isinstance(cond_node, Pointer):
-        #     var_df = self.makeDFTree(cond_node.var, scope)
-        #     ptr_df = self.makeDFTree(cond_node.ptr, scope)
-        #
-        #     if isinstance(var_df, DFTerminal) and self.getTermDims(var_df.name) is not None:
-        #         return DFPointer(var_df, ptr_df)
-        #     return DFPartselect(var_df, ptr_df, copy.deepcopy(ptr_df))
-        #
+
         # if isinstance(cond_node, Concat):
         #     nextcond_nodes = []
         #     for n in cond_node.list:
@@ -653,7 +655,7 @@ class BindVisitor(NodeVisitor):
         self.visit(node.pre)
         self.frames.unsetForPre()
         label = self.labels.get(self.frames.getLabelKey('for'))
-        #loop = 0
+        # loop = 0
         start_frame = self.frames.getCurrent()
 
         while True:
@@ -689,7 +691,7 @@ class BindVisitor(NodeVisitor):
             self.frames.setForPost()
             self.visit(node.post)
             self.frames.unsetForPost()
-            #loop += 1
+            # loop += 1
 
     def visit_WhileStatement(self, node):
         if self.frames.isFunctiondef() and not self.frames.isFunctioncall():
@@ -759,8 +761,8 @@ class BindVisitor(NodeVisitor):
         self.addBind(node.left, node.right, bindtype='assign')
 
     def visit_BlockingSubstitution(self, node):
-        # self.addBind(node.left, node.right, self.frames.getAlwaysStatus(), 'blocking')
-        self.addBind(node.left, node.right, self.frames.getAlwaysStatus(), 'nonblocking')
+        self.addBind(node.left, node.right, self.frames.getAlwaysStatus(), 'blocking')
+        # self.addBind(node.left, node.right, self.frames.getAlwaysStatus(), 'nonblocking')
 
     def visit_NonblockingSubstitution(self, node):
         if self.frames.isForpre() or self.frames.isForpost():
@@ -928,7 +930,7 @@ class BindVisitor(NodeVisitor):
     def renameVar(self, name):
         renamedvar = (name[:-1] +
                       ScopeLabel('_rn' + str(self.renamecnt) +
-                                   '_' + name[-1].scopename, 'signal'))
+                                 '_' + name[-1].scopename, 'signal'))
         self.renamecnt += 1
         return renamedvar
 
@@ -1062,8 +1064,10 @@ class BindVisitor(NodeVisitor):
     def makeConstantTerm(self, name, node, scope):
         termtype = node.__class__.__name__
         termtypes = set([termtype])
-        msb = DFIntConst('31') if node.width is None else self.makeDFTree(node.width.msb, scope)
-        lsb = DFIntConst('0') if node.width is None else self.makeDFTree(node.width.lsb, scope)
+        msb = DFIntConst('31', probability=self.frames.getProbability()) if node.width is None else self.makeDFTree(
+            node.width.msb, scope)
+        lsb = DFIntConst('0', probability=self.frames.getProbability()) if node.width is None else self.makeDFTree(
+            node.width.lsb, scope)
         return Term(name, termtypes, msb, lsb)
 
     def addTerm(self, node, rscope=None):
@@ -1081,10 +1085,13 @@ class BindVisitor(NodeVisitor):
         termtypes = set([termtype])
 
         if isinstance(node, (Parameter, Localparam)):
-            msb = DFIntConst('31') if node.width is None else self.makeDFTree(node.width.msb, scope)
+            msb = DFIntConst('31', probability=self.frames.getProbability()) if node.width is None else self.makeDFTree(
+                node.width.msb, scope)
         else:
-            msb = DFIntConst('0') if node.width is None else self.makeDFTree(node.width.msb, scope)
-        lsb = DFIntConst('0') if node.width is None else self.makeDFTree(node.width.lsb, scope)
+            msb = DFIntConst('0', probability=self.frames.getProbability()) if node.width is None else self.makeDFTree(
+                node.width.msb, scope)
+        lsb = DFIntConst('0', probability=self.frames.getProbability()) if node.width is None else self.makeDFTree(
+            node.width.lsb, scope)
 
         dims = None
         if node.dimensions is not None:
@@ -1228,7 +1235,7 @@ class BindVisitor(NodeVisitor):
         :param probability: 当前节点的概率，用于概率分析。
         :return: 代表给定AST节点的数据流的DFT节点。
         """
-        if not probability: # 如果没有指定当前DFTree的概率，则使用当前作用域的概率
+        if not probability:  # 如果没有指定当前DFTree的概率，则使用当前作用域的概率
             probability = self.frames.dict[scope].probability
 
         if isinstance(node, str):
@@ -1312,6 +1319,7 @@ class BindVisitor(NodeVisitor):
             ptr_df = self.makeDFTree(node.ptr, scope, probability)
             # 如果变量的DFT是一个终端并且有维度，就创建一个指针节点。
             if isinstance(var_df, DFTerminal) and self.getTermDims(var_df.name) is not None:
+                raise NotImplemented
                 return DFPointer(var_df, ptr_df)
             # 否则，创建一个部分选择节点，把指针作为MSB和LSB。
             return DFPartselect(var_df, ptr_df, copy.deepcopy(ptr_df), probability=probability)
@@ -1426,6 +1434,7 @@ class BindVisitor(NodeVisitor):
                 return self.makeDFTree(node.args[0], scope, probability)
             if node.syscall == 'signed':
                 return self.makeDFTree(node.args[0], scope, probability)
+            raise NotImplemented
             return DFIntConst('0')
 
         # 如果节点类型不被识别，就抛出一个格式错误。
@@ -1519,6 +1528,7 @@ class BindVisitor(NodeVisitor):
                     self.getTermDims(tree.var.name) is not None):
                 current_bindlist = self.frames.getBlockingAssign(tree.var.name, scope)
                 if len(current_bindlist) == 0:
+                    raise NotImplemented
                     return DFPointer(tree.var, resolved_ptr)
                 new_tree = DFPointer(tree.var, resolved_ptr)
                 for bind in current_bindlist:
@@ -1562,13 +1572,15 @@ class BindVisitor(NodeVisitor):
         for bind in sorted(bindlist, key=bindkey):
             lsb = 0 if bind.lsb is None else bind.lsb.value
             if last_ptr != (-1 if not isinstance(bind.ptr, DFEvalValue)
-                            else bind.ptr.value):
+            else bind.ptr.value):
                 continue
             if last_msb + 1 < lsb:
+                raise NotImplemented
                 concatlist.append(DFUndefined(last_msb - lsb - 1))
             concatlist.append(bind.tree)
             last_msb = -1 if bind.msb is None else bind.msb.value
             last_ptr = -1 if not isinstance(bind.ptr, DFEvalValue) else bind.ptr.value
+        raise NotImplemented
         return DFConcat(tuple(reversed(concatlist)))
 
     def getDestinations(self, left, scope):
@@ -1674,7 +1686,7 @@ class BindVisitor(NodeVisitor):
 
             self.dataflow.addBind(name, bind)
 
-            if alwaysinfo is not None: # 当前节点在 always下，所以包含非阻塞赋值
+            if alwaysinfo is not None:  # 当前节点在 always下，所以包含非阻塞赋值
                 self.setNonblockingAssign(name, dst, raw_tree,
                                           msb, lsb, ptr,
                                           part_msb, part_lsb,
@@ -1690,7 +1702,7 @@ class BindVisitor(NodeVisitor):
                              part_msb, part_lsb, alwaysinfo):
         tree = raw_tree
         if len(dst) > 1:
-            tree = reorder.reorder(DFPartselect(raw_tree, part_msb, part_lsb, probability= raw_tree.probability))
+            tree = reorder.reorder(DFPartselect(raw_tree, part_msb, part_lsb, probability=raw_tree.probability))
         bind = Bind(tree, name, msb, lsb, ptr, alwaysinfo)
         self.frames.addNonblockingAssign(name, bind)
 
@@ -1730,7 +1742,7 @@ class BindVisitor(NodeVisitor):
                        scope, alwaysinfo=None):
         term_i = 0
         for name, msb, lsb, ptr, part_msb, part_lsb in dst:
-            renamed_term = DFTerminal(renamed_dst[term_i][0])
+            renamed_term = DFTerminal(renamed_dst[term_i][0], probability=self.frames.getProbability())
             renamed_bind = self.makeBind(name, msb, lsb, ptr, part_msb, part_lsb,
                                          renamed_term, condlist, flowlist,
                                          num_dst=len(dst), alwaysinfo=alwaysinfo)
@@ -1875,9 +1887,11 @@ class BindVisitor(NodeVisitor):
             return tree
         if len(pos) == 1:  # 否则将子树tree追加到 base分支上
             if pos[0]:
-                return DFBranch(base.condnode, tree, base.falsenode, probability=tree.probability + base.falsenode.probability)
+                return DFBranch(base.condnode, tree, base.falsenode,
+                                probability=tree.probability + base.falsenode.probability)
             else:
-                return DFBranch(base.condnode, base.truenode, tree, probability=tree.probability + base.truenode.probability)
+                return DFBranch(base.condnode, base.truenode, tree,
+                                probability=tree.probability + base.truenode.probability)
         else:
             if pos[0]:
                 base_falsenode_probability = 0 if base.falsenode is None else base.falsenode.probability
@@ -1885,7 +1899,7 @@ class BindVisitor(NodeVisitor):
                 return DFBranch(
                     base.condnode,
                     truenode,
-                    base.falsenode, probability=base_falsenode_probability + truenode.probability )
+                    base.falsenode, probability=base_falsenode_probability + truenode.probability)
             else:
                 base_truenode_probability = 0 if base.truenode is None else base.truenode.probability
 
@@ -1894,4 +1908,4 @@ class BindVisitor(NodeVisitor):
                     base.condnode,
                     base.truenode,
                     falsenode
-                ,probability=base_truenode_probability + falsenode.probability )
+                    , probability=base_truenode_probability + falsenode.probability)
