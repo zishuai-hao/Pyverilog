@@ -8,9 +8,6 @@
 # -------------------------------------------------------------------------------
 from __future__ import absolute_import
 from __future__ import print_function
-import sys
-import os
-import copy
 
 from pyverilog.dataflow.dataflow import *
 from pyverilog.utils.verror import FormatError, DefinitionError
@@ -54,7 +51,7 @@ def reorder(tree):
         for r in resolvednodes:
             if isinstance(r, DFBranch):
                 return insertConcat(resolvednodes)
-        return DFConcat(tuple(resolvednodes) , probability=tree.probability)
+        return DFConcat(tuple(resolvednodes), probability=tree.probability)
 
     if isinstance(tree, DFPartselect):
         resolved_msb = reorder(tree.msb)
@@ -64,7 +61,7 @@ def reorder(tree):
             raise FormatError('MSB and LSB should not be DFBranch')
         if isinstance(resolved_var, DFBranch):
             return insertPartselect(resolved_var, resolved_msb, resolved_lsb)
-        return DFPartselect(resolved_var, resolved_msb, resolved_lsb , probability=tree.probability)
+        return DFPartselect(resolved_var, resolved_msb, resolved_lsb, probability=tree.probability)
 
     if isinstance(tree, DFPointer):
         resolved_ptr = reorder(tree.ptr)
@@ -76,19 +73,21 @@ def reorder(tree):
                             reorder(DFPointer(resolved_var, resolved_ptr.falsenode)), probability=tree.probability)
         if isinstance(resolved_var, DFBranch):
             return insertPointer(resolved_var, resolved_ptr)
-        return DFPointer(resolved_var, resolved_ptr , probability=tree.probability)
+        return DFPointer(resolved_var, resolved_ptr, probability=tree.probability)
 
     if isinstance(tree, DFDelay):
-        return DFDelay(reorder(tree.nextnode) , probability=tree.probability)
+        return DFDelay(reorder(tree.nextnode), probability=tree.probability)
 
     raise DefinitionError('Undefined DFNode type: %s %s' % (str(type(tree)), str(tree)))
+
 
 ############################################################################
 
 
 def insertBranch(base, truenode, falsenode):
     if isinstance(base, DFBranch):
-        return DFBranch(base.condnode, insertBranch(base.truenode, truenode, falsenode), insertBranch(base.falsenode, truenode, falsenode))
+        return DFBranch(base.condnode, insertBranch(base.truenode, truenode, falsenode),
+                        insertBranch(base.falsenode, truenode, falsenode))
     return DFBranch(base, truenode, falsenode)
 
 
@@ -112,7 +111,8 @@ def insertOpList(nextnodes, op):
     for n in nextnodes:
         restnodes.pop(0)
         if isinstance(n, DFBranch):
-            return DFBranch(n.condnode, insertOpList(tuple(donenodes + [n.truenode, ] + restnodes), op), insertOpList(tuple(donenodes + [n.falsenode, ] + restnodes), op))
+            return DFBranch(n.condnode, insertOpList(tuple(donenodes + [n.truenode, ] + restnodes), op),
+                            insertOpList(tuple(donenodes + [n.falsenode, ] + restnodes), op))
         donenodes.append(n)
     return DFOperator(nextnodes, op)
 
@@ -123,14 +123,16 @@ def insertConcat(nextnodes):
     for n in nextnodes:
         restnodes.pop(0)
         if isinstance(n, DFBranch):
-            return DFBranch(n.condnode, insertConcat(tuple(donenodes + [n.truenode, ] + restnodes)), insertConcat(tuple(donenodes + [n.falsenode, ] + restnodes)))
+            return DFBranch(n.condnode, insertConcat(tuple(donenodes + [n.truenode, ] + restnodes)),
+                            insertConcat(tuple(donenodes + [n.falsenode, ] + restnodes)))
         donenodes.append(n)
     return DFConcat(nextnodes)
 
 
 def insertPartselect(var, msb, lsb):
     if isinstance(var, DFBranch):
-        return DFBranch(var.condnode, insertPartselect(var.truenode, msb, lsb), insertPartselect(var.falsenode, msb, lsb), probability=var.probability)
+        return DFBranch(var.condnode, insertPartselect(var.truenode, msb, lsb),
+                        insertPartselect(var.falsenode, msb, lsb), probability=var.probability)
     if var is None:
         return None
     return DFPartselect(var, msb, lsb, probability=var.probability)

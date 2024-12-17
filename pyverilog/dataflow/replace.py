@@ -8,8 +8,6 @@
 # -------------------------------------------------------------------------------
 from __future__ import absolute_import
 from __future__ import print_function
-import sys
-import os
 
 from pyverilog.dataflow.dataflow import *
 from pyverilog.utils.verror import DefinitionError

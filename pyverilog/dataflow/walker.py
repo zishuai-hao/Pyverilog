@@ -8,16 +8,11 @@
 # -------------------------------------------------------------------------------
 from __future__ import absolute_import
 from __future__ import print_function
-import sys
-import os
 
-import pyverilog.utils.util as util
-import pyverilog.utils.verror as verror
-import pyverilog.utils.signaltype as signaltype
 import pyverilog.dataflow.replace as replace
 from pyverilog.dataflow.dataflow import *
-from pyverilog.dataflow.visit import *
 from pyverilog.dataflow.merge import VerilogDataflowMerge
+from pyverilog.dataflow.visit import *
 
 
 class VerilogDataflowWalker(VerilogDataflowMerge):
@@ -70,7 +65,7 @@ class VerilogDataflowWalker(VerilogDataflowMerge):
             nextstep = step
             if signaltype.isReg(termtype):
                 if (not self.isCombination(termname) and
-                    not signaltype.isRename(termtype) and
+                        not signaltype.isRename(termtype) and
                         nextstep == 0):
                     return tree
                 if (not self.isCombination(termname)
@@ -98,9 +93,11 @@ class VerilogDataflowWalker(VerilogDataflowMerge):
             var = self.walkTree(tree.var, visited, step, delay, msb=msb, lsb=lsb)
             if isinstance(var, DFPartselect):
                 child_lsb = self.getTerm(str(tree.var)).lsb.eval()
-                return DFPartselect(var.var, DFIntConst(str(msb.eval() + var.lsb.eval() - child_lsb), probability=tree.probability),
-                                    DFIntConst(str(lsb.eval() + var.lsb.eval() - child_lsb), probability=tree.probability), probability = tree.probability)
-            return DFPartselect(var, msb, lsb, probability = tree.probability)
+                return DFPartselect(var.var, DFIntConst(str(msb.eval() + var.lsb.eval() - child_lsb),
+                                                        probability=tree.probability),
+                                    DFIntConst(str(lsb.eval() + var.lsb.eval() - child_lsb),
+                                               probability=tree.probability), probability=tree.probability)
+            return DFPartselect(var, msb, lsb, probability=tree.probability)
 
         if isinstance(tree, DFPointer):
             ptr = self.walkTree(tree.ptr, visited, step, delay)
