@@ -550,7 +550,7 @@ class BindVisitor(NodeVisitor):
             term = self.dataflow.getTerm(name)
             msb, lsb = term.msb, term.lsb
             result = Fraction(1, pow(2, msb - lsb + 1))
-            print(f"{cond_node}条件下的概率：{result}")
+            # print(f"{cond_node}条件下的概率：{result}")
             return result
 
         if isinstance(cond_node, Identifier):
@@ -566,7 +566,7 @@ class BindVisitor(NodeVisitor):
             term = self.dataflow.getTerm(name)
             msb, lsb = term.msb, term.lsb
             result = Fraction(1, pow(2, int(msb.value) - int(lsb.value) + 1))
-            print(f"{cond_node}概率：{result}")
+            # print(f"{cond_node}概率：{result}")
             return result
 
         # if isinstance(cond_node, Cond):

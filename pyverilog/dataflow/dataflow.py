@@ -9,11 +9,13 @@
 # -------------------------------------------------------------------------------
 from __future__ import absolute_import
 from __future__ import print_function
-from fractions import Fraction
+
 import sys
 import os
 import re
 import copy
+from fractions import Fraction
+from typing import Union
 
 dfnodelist = ('DFIntConst', 'DFFloatConst', 'DFStringConst',
               'DFEvalValue', 'DFUndefined', 'DFHighImpedance',
@@ -43,7 +45,9 @@ import pyverilog.utils.util as util
 import pyverilog.utils.signaltype as signaltype
 import pyverilog.utils.op2mark as op2mark
 
-DEFAULT_PROB = Fraction(10,1)
+DEFAULT_PROB = Fraction(10, 1)
+
+
 class DFNode(object):
     attr_names = ()
 
@@ -51,16 +55,20 @@ class DFNode(object):
         self.lineno = lineno
         self.probability = probability
 
-    def __repr__(self): pass
+    def __repr__(self):
+        pass
 
-    def tostr(self): pass
+    def tostr(self):
+        pass
 
-    def tocode(self, dest='dest'): return self.__repr__()
+    def tocode(self, dest='dest'):
+        return self.__repr__()
 
     def tolabel(self):
-        if self.probability == Fraction(10,1):
-            print(f"{self.__repr__()}:{self.probability}")
+        # if self.probability == Fraction(10, 1):
+        #     print(f"{self.__repr__()}:{self.probability}")
         return f"{self.__repr__()}:{self.probability}"
+
     # def tolabel(self): return f"{self.__repr__()}"
 
     def children(self):
@@ -718,7 +726,7 @@ class Term(object):
 
     def tostr(self):
         ret = '(Term name:' + str(self.name) + ' type:' + \
-            str(sorted(self.termtype, key=lambda x: str(x)))
+              str(sorted(self.termtype, key=lambda x: str(x)))
         if self.msb is not None:
             ret += ' msb:' + self.msb.tostr()
         if self.lsb is not None:
@@ -994,7 +1002,7 @@ class DataFlow(object):
     def hasTerm(self, name):
         return name in self.terms
 
-    def getTerm(self, name) -> Term|None:
+    def getTerm(self, name) -> Union[Term, None]:
         if name in self.terms:
             return self.terms[name]
         return None
