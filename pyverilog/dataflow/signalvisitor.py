@@ -132,7 +132,7 @@ class SignalVisitor(NodeVisitor):
 
         if nodename == '':
             raise verror.FormatError("Module %s requires an instance name" % node.module)
-
+        self.labels = Labels()
         current = self.stackInstanceFrame(nodename, node.module)
 
         self.setInstanceSimpleConstantTerms()

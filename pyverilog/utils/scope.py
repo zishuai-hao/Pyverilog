@@ -41,12 +41,22 @@ class ScopeLabel(object):
         return self.scopename
 
     def __eq__(self, other):
-        if type(self) != type(other):
+        # if type(self) != type(other):
+        #     return False
+        # if self.scopetype == 'any' or other.scopetype == 'any':
+        #     return ((self.scopename, self.scopeloop)
+        #             == (other.scopename, other.scopeloop))
+        # return (self.scopename, self.scopetype, self.scopeloop) == (other.scopename, other.scopetype, other.scopeloop)
+        # update 原因：执行时间太长，不比较数组，直接比较元素 2024 年 10 月 23 日 09:17:32
+        if not isinstance(other, type(self)):
             return False
+
         if self.scopetype == 'any' or other.scopetype == 'any':
-            return ((self.scopename, self.scopeloop)
-                    == (other.scopename, other.scopeloop))
-        return (self.scopename, self.scopetype, self.scopeloop) == (other.scopename, other.scopetype, other.scopeloop)
+            return self.scopename == other.scopename and self.scopeloop == other.scopeloop
+
+        return (self.scopename == other.scopename and
+                self.scopetype == other.scopetype and
+                self.scopeloop == other.scopeloop)
 
     def __ne__(self, other):
         return not self.__eq__(other)
@@ -66,7 +76,8 @@ class ScopeChain(object):
             self.scopechain = scopechain
 
     def __add__(self, r):
-        new_chain = copy.deepcopy(self)
+        # new_chain = copy.deepcopy(self) # zs 取消 deepcopy, 原因：耗时太长, 2024 年 10 月 22 日 10:12:54
+        new_chain = ScopeChain(copy.copy(self.scopechain))
         if isinstance(r, ScopeLabel):
             new_chain.append(r)
         elif isinstance(r, ScopeChain):
@@ -74,6 +85,35 @@ class ScopeChain(object):
         else:
             raise verror.DefinitionError('Can not add %s' % str(r))
         return new_chain
+
+    def find(self, old):
+        sub_length = len(old)
+        result = []
+        i = 0
+        scope_chain = self.scopechain
+        while i < len(scope_chain):
+            # 检查是否找到子数组
+            if scope_chain[i:i + sub_length] == old.scopechain:
+                return True
+            else:
+                result.append(scope_chain[i])  # 保留当前元素
+                i += 1
+        return False
+
+    def replace(self, old, new):
+        sub_length = len(old)
+        result = []
+        i = 0
+        scope_chain = self.scopechain
+        while i < len(scope_chain):
+            # 检查是否找到子数组
+            if scope_chain[i:i + sub_length] == old.scopechain:
+                result.extend(new.scopechain)  # 替换为另一个数组
+                i += sub_length  # 跳过子数组的长度
+            else:
+                result.append(scope_chain[i])  # 保留当前元素
+                i += 1
+        return ScopeChain(result)
 
     def append(self, r):
         self.scopechain.append(r)

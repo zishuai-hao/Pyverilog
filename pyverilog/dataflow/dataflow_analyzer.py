@@ -53,7 +53,7 @@ class VerilogDataflowAnalyzer(VerilogCodeParser):
             return
 
         bind_visitor = BindVisitor(moduleinfotable, self.topmodule, frametable,
-                                   noreorder=self.noreorder)
+                                   noreorder=self.noreorder, use_cache=True)
 
         bind_visitor.start_visit()
         dataflow = bind_visitor.getDataflows()

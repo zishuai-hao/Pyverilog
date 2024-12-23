@@ -11,15 +11,42 @@
 from __future__ import absolute_import
 from __future__ import print_function
 
+import concurrent.futures
+import time
+from functools import wraps
+
 import pyverilog.dataflow.reorder as reorder
 import pyverilog.dataflow.replace as replace
+from pyverilog.dataflow.cache import *
 from pyverilog.dataflow.dataflow import *
-from pyverilog.dataflow.optimizer import VerilogOptimizer
 from pyverilog.dataflow.visit import *
+
+format = "{time:YYYY-MM-DD at HH:mm:ss} | {level} | {message} | {name}:{function}:{line}"
+logger.remove()
+logger.add(sys.stdout, level='DEBUG', format=format)
+logger.add('output.log', level='DEBUG', format=format)
+
+
+def get_time_ms(message: None):
+    def get_time(f):
+        @wraps(f)
+        def inner(*arg, **kwarg):
+            s_time = time.time()
+            res = f(*arg, **kwarg)
+            e_time = time.time()
+            logger.debug(f'{message}耗时：{e_time - s_time}秒')
+            return res
+
+        return inner
+
+    return get_time
+
+
+executor = concurrent.futures.ThreadPoolExecutor(max_workers=10)
 
 
 class BindVisitor(NodeVisitor):
-    def __init__(self, moduleinfotable, top, frames: FrameTable, noreorder=False):
+    def __init__(self, moduleinfotable, top, frames: FrameTable, noreorder=False, use_cache=False):
         self.moduleinfotable = moduleinfotable
         self.top = top
         self.frames = frames
@@ -33,13 +60,18 @@ class BindVisitor(NodeVisitor):
         self.frames.setCurrent(ScopeChain())
         self.stackInstanceFrame(top, top)
 
-        self.copyAllFrameInfo()
+        self.copyAllFrameInfo()  # 这一步主要是将所有信号和常量加入数据流符号表
 
         current = self.frames.getCurrent()
-        self.copyFrameInfo(current)
+        self.copyFrameInfo(current)  # 没有常量啥也没干
 
         self.renamecnt = 0
         self.default_nettype = 'wire'
+        self.DFTree_cache = dict()
+        self.module_cache = ModuleCache()
+
+        self.always_feature_map = []
+        self.use_cache = use_cache
 
     def getDataflows(self):
         return self.dataflow
@@ -50,9 +82,151 @@ class BindVisitor(NodeVisitor):
     def start_visit(self):
         return self.visit(self.moduleinfotable.getDefinition(self.top))
 
+    def fast_module_visit(self, module_node):
+        """
+            需要将该模块所引用到的信号名，scope都追加上去
+            处理数据流，主要包括instance信号的关联，  这个关联是由当前层传递到下级模块
+            当前问题，处理完嵌套模块后，父模块没有信息
+        """
+        # 存储处理后的alwaysinfo
+        current_scope = self.frames.getCurrent()
+        # rcurrent_scope = current_scope[-1]
+        module_status = self.module_cache.getModuleInfo(module_node.name)
+        instance_scope = module_status.instance_scope
+        # 存储处理后的alwaysinfo
+        after_process_alaways_info_dict = {}
+
+        def process_bind(bind):
+            bind = copy.copy(bind)
+            bind.dest = update_scope(bind.dest, instance_scope, current_scope, self.labels, module_status.labels_cache)
+            if bind.alwaysinfo:
+                bind.alwaysinfo = after_process_alaways_info_dict[bind.alwaysinfo.alwaysScope]
+            # value.ptr = copy.deepcopy(value.ptr) # TODO 不理解这个 ptr
+            bind.tree = process_tree(copy.deepcopy(bind.tree), visited=set(),
+                                     instance_scope=instance_scope, current_scope=current_scope, labels=self.labels,
+                                     labels_cache=module_status.labels_cache)
+
+            # bind.tree = copy.deepcopy(value.tree)
+            return bind
+
+        # rinstance_scope = module_status.instance_scope[-1]
+        # 1. 处理frames:sframe always, nb assign, blockassign
+        for item in module_status.frames_cache.items():
+            raise NotImplementedError
+        for item in self.frames.dict.items():
+            (scope, _) = item
+            if scope.find(instance_scope):
+                new_scope = scope.replace(instance_scope, current_scope)
+                if (new_scope not in self.frames.dict):
+                    continue
+                self.frames.dict[new_scope].probability = self.frames.dict[scope].probability
+
+
+
+        # always_info
+        for item in module_status.always_cache.items():
+            (key, value) = item
+            value = copy.copy(value)
+            key = update_scope(key, instance_scope, current_scope, self.labels, module_status.labels_cache)
+
+            if value.clock_name != None:
+                old_clock_name = value.clock_name
+                value.clock_name = update_scope(value.clock_name, instance_scope, current_scope,
+                                                self.labels, module_status.labels_cache)
+                self.always_feature_map.append(f'{value.clock_name}')
+            if (value.reset_name != None):
+                old_reset_name = value.reset_name
+                value.reset_name = update_scope(value.reset_name, instance_scope, current_scope,
+                                                self.labels, module_status.labels_cache)
+
+                self.always_feature_map.append(f'{value.reset_name}')
+            self.always_feature_map.append(f'{value.clock_name}')
+            if len(value.senslist) > 0:
+                for sens in value.senslist:
+                    if isinstance(sens.sig, Pointer):
+                        sens_name = f"{current_scope.__repr__()} .{sens.sig.var}[{sens.sig.ptr}]"
+                    else:
+                        sens_name = f"{current_scope.__repr__()} .{sens.sig.name}"
+                    self.always_feature_map.append(sens_name)
+            self.frames.dict[key].alawaysinfo = value
+            after_process_alaways_info_dict[value.alwaysScope] = value
+
+        for item in module_status.nb_assign_cache.items():
+            (key, assigns) = item
+            assigns = copy.copy(assigns)
+            key = update_scope(key, instance_scope, current_scope, self.labels, module_status.labels_cache)
+            for assign in assigns.items():
+                (scope, value) = assign
+                scope = update_scope(scope, instance_scope, current_scope, self.labels, module_status.labels_cache)
+                value = process_bind(value)
+                self.frames.dict[key].addNonblockingAssign(scope, value)
+
+        for item in module_status.block_assign_cache.items():
+            (key, assigns) = item
+            assigns = copy.copy(assigns)
+            key = update_scope(key, instance_scope, current_scope, self.labels, module_status.labels_cache)
+            for assign in assigns.items():
+                (scope, value) = assign
+                scope = update_scope(scope, instance_scope, current_scope, self.labels, module_status.labels_cache)
+                value = process_bind(value)
+                self.frames.dict[key].setBlockingAssign(scope, value)
+
+        # 2. 处理dataflow bind 使用自带的函数，可以自动merge
+        for item in module_status.dataflow.binddict.items():
+            (key, binds) = item
+            key = update_scope(key, instance_scope, current_scope, self.labels, module_status.labels_cache)
+            for bind in binds:
+                self.dataflow.addBind(key, process_bind(bind))
+        for item in module_status.dataflow.terms.items():
+            (name, term) = item
+            name = update_scope(name, instance_scope, current_scope, self.labels, module_status.labels_cache)
+            term = copy.copy(term)
+            term.name = update_scope(term.name, instance_scope, current_scope, self.labels, module_status.labels_cache)
+            self.dataflow.addTerm(name, term)
+        # 3. 处理optimizer
+        for item in module_status.optimizer.constlist.items():
+            raise NotImplementedError
+            (name, const) = item
+            self.optimizer.setConstant(
+                update_scope(name, instance_scope, current_scope, self.labels, module_status.labels_cache),
+                None)
+        for item in module_status.optimizer.terms.items():
+            (name, term) = item
+            name = update_scope(name, instance_scope, current_scope, self.labels, module_status.labels_cache)
+            term = copy.copy(term)
+            term.name = update_scope(term.name, instance_scope, current_scope, self.labels, module_status.labels_cache)
+            self.optimizer.setTerm(name, term)
+
     def visit_ModuleDef(self, node):
+        # if self.use_cache and self.module_cache.hasModuleInfo(node.name) and self.module_cache.check_leaf(node.name) :
+        if self.use_cache and self.module_cache.hasModuleInfo(node.name):
+            return self.fast_module_visit(node)
+        is_leaf = True
+        for item in node.items:
+            if isinstance(item, (InstanceList, Instance)):
+                is_leaf = False
+        self.module_cache.addModuleInfo(node.name, ModuleStatus(self.frames.getCurrent(), FrameTable(), DataFlow(),
+                                                                VerilogOptimizer({}, {}), is_leaf=is_leaf))
+        logger.info(f"遍历模块 {node.name}")
+        # cached = ModuleStatus.of(None,self.frames,  self.labels, self.dataflow, self.optimizer)
+        # cached_labels = copy.deepcopy(self.labels.labels)
+
         self.default_nettype = node.default_nettype
         self.generic_visit(node)
+
+        logger.info(f"遍历模块结束 {node.name}")
+        # now = ModuleStatus.of(None,self.frames, self.labels, self.dataflow, self.optimizer)
+        # cached.compare_exists_keys(now)
+
+        # # 处理完该模块后，读取模块的
+        # labels_addition = Labels()
+        # for item in self.labels.labels.items():
+        #     (key, value) = copy.deepcopy(item)
+        #     if key in cached_labels:
+        #         value.cnt = value.cnt - cached_labels[key].cnt
+        #     labels_addition.labels[key] = value
+        # self.module_cache.current.labels_addition = labels_addition
+        # self.module_cache.current.labels_cache = cached_labels
 
     def visit_Input(self, node):
         self.addTerm(node)
@@ -142,12 +316,15 @@ class BindVisitor(NodeVisitor):
             nodename = node.name + '_' + str(i)
             self._visit_Instance_body(node, nodename, arrayindex=i)
 
+    @get_time_ms(message="instance")
     def _visit_Instance_body(self, node, nodename, arrayindex=None):
         if node.module in primitives:
             return self._visit_Instance_primitive(node, arrayindex)
 
         if nodename == '':
             raise verror.FormatError("Module %s requires an instance name" % node.module)
+        # 重置 labels
+        self.labels = Labels()
 
         current = self.stackInstanceFrame(nodename, node.module)
 
@@ -172,7 +349,7 @@ class BindVisitor(NodeVisitor):
             if port.portname is not None and not (port.portname in ioports):
                 raise verror.FormatError("No such port: %s in %s" %
                                          (port.argname.name, nodename))
-            self.addInstancePortBind(port, ioports[ioport_i], arrayindex)
+            self.addInstancePortBind(port, ioports[ioport_i], arrayindex)  # 将实例的输入端口绑定到数据流图中
 
         new_current = self.frames.getCurrent()
         self.copyFrameInfo(new_current)
@@ -181,6 +358,7 @@ class BindVisitor(NodeVisitor):
         self.frames.setCurrent(current)
 
     def _visit_Instance_primitive(self, node, arrayindex=None):
+        # 没有执行到这里
         primitive_type = primitives[node.module]
         left = node.portlist[0].argname
         if arrayindex is not None:
@@ -216,9 +394,20 @@ class BindVisitor(NodeVisitor):
         (clock_name, clock_edge, clock_bit,
          reset_name, reset_edge, reset_bit,
          senslist) = self._createAlwaysinfo(node, current)
-
+        self.always_feature_map.append(clock_name.__repr__())
+        if reset_name:
+            self.always_feature_map.append(reset_name.__repr__())
+        if len(senslist) > 0:
+            for sens in senslist:
+                if isinstance(sens.sig, Pointer):
+                    sens_name = f"{current.__repr__()} .{sens.sig.var}[{sens.sig.ptr}]"
+                else:
+                    sens_name = f"{current.__repr__()} .{sens.sig.name}"
+                self.always_feature_map.append(sens_name)
         self.frames.setAlwaysInfo(clock_name, clock_edge, clock_bit,
-                                  reset_name, reset_edge, reset_bit, senslist)
+                                  reset_name, reset_edge, reset_bit, senslist, current)
+        # TODO cache alaswaysInfo
+        self.module_cache.addAlawaysInfo(self.frames.getCurrent(), self.frames.getAlwaysInfo())
 
         self.generic_visit(node)
         self.frames.setCurrent(current)
@@ -263,11 +452,11 @@ class BindVisitor(NodeVisitor):
                 reset_bit = bit
             else:
                 senslist.append(l)
-
-        if clock_edge is not None and len(senslist) > 0:
-            raise verror.FormatError('Illegal sensitivity list')
-        if reset_edge is not None and len(senslist) > 0:
-            raise verror.FormatError('Illegal sensitivity list')
+        # TODO  为了保持设计的清晰和可预测性，通常建议将时钟边沿触发的逻辑和复位边沿触发的逻辑分开处理
+        # if clock_edge is not None and len(senslist) > 0:
+        #     raise verror.FormatError('Illegal sensitivity list')
+        # if reset_edge is not None and len(senslist) > 0:
+        #     raise verror.FormatError('Illegal sensitivity list')
 
         return (clock_name, clock_edge, clock_bit, reset_name, reset_edge, reset_bit, senslist)
 
@@ -754,7 +943,7 @@ class BindVisitor(NodeVisitor):
 
         self.generic_visit(node)
         self.frames.setCurrent(current)
-        if self.frames.isAlways():
+        if self.frames.isAlways():  # 将下层节点的blocking赋值语句复制到上层节点
             self.copyBlockingAssigns(current + ScopeLabel(label, 'block'), current)
 
     def visit_Assign(self, node):
@@ -765,6 +954,7 @@ class BindVisitor(NodeVisitor):
         # self.addBind(node.left, node.right, self.frames.getAlwaysStatus(), 'nonblocking')
 
     def visit_NonblockingSubstitution(self, node):
+        """处理非阻塞赋值"""
         if self.frames.isForpre() or self.frames.isForpost():
             raise verror.FormatError(("Non Blocking Substitution is not allowed"
                                       "in for-statement"))
@@ -773,7 +963,7 @@ class BindVisitor(NodeVisitor):
         self.addBind(node.left, node.right, self.frames.getAlwaysStatus(), 'nonblocking')
 
     def visit_SystemCall(self, node):
-        print("Warning: Isolated system call is not supported: %s" % node.syscall)
+        logger.info("Warning: Isolated system call is not supported: %s" % node.syscall)
 
     def optimize(self, node):
         return self.optimizer.optimize(node)
@@ -798,13 +988,15 @@ class BindVisitor(NodeVisitor):
         scopelabel = ScopeLabel(label, scopetype, loop)
         nextscope = current + scopelabel
 
-        if not self.frames.hasFrame(nextscope):
+        if not self.frames.hasFrame(nextscope):  # 如果没有该作用域，则加入，如果经过 signalvisit,则已经添加
             current = self.frames.addFrame(scopelabel,
                                            frametype=frametype,
                                            alwaysinfo=alwaysinfo, condition=condition,
                                            module=module, functioncall=functioncall, taskcall=taskcall,
                                            generate=generate, always=always, initial=initial,
                                            loop=loop, loop_iter=loop_iter)
+            # TODO cache add frame 这里要考虑当前的 current 以及后面会不会修改这个 frame
+            self.module_cache.addFrame(self.frames.getCurrent(), self.frames.dict[self.frames.getCurrent()])
 
         self.frames.setCurrent(nextscope)
         self.frames.updateProbability(probability)
@@ -820,6 +1012,8 @@ class BindVisitor(NodeVisitor):
                 termtype = definition.__class__.__name__
                 term = Term(name, set([termtype]))
                 self.dataflow.addTerm(name, term)
+                if hasattr(self, "module_cache"):
+                    self.module_cache.setTerm(name, term)
 
         for name, definitions in self.frames.getConsts(current).items():
             if len(definitions) > 1:
@@ -847,7 +1041,7 @@ class BindVisitor(NodeVisitor):
                     self.setConstant(name, value)
 
     def copyAllFrameInfo(self):
-        for name, definitions in self.frames.getAllConsts().items():
+        for name, definitions in self.frames.getAllConsts().items():  # 将所有的常量加入dataflow
             if len(definitions) > 1:
                 raise verror.FormatError("Multiple definitions for Constant")
 
@@ -856,7 +1050,7 @@ class BindVisitor(NodeVisitor):
                 term = Term(name, set([termtype]))
                 self.dataflow.addTerm(name, term)
 
-        for name, definitions in self.frames.getAllSignals().items():
+        for name, definitions in self.frames.getAllSignals().items():  # 将信号加入 dataflow的 terms
             for definition in definitions:
                 termtype = definition.__class__.__name__
                 self.dataflow.addTerm(name, Term(name, set([termtype])))
@@ -874,6 +1068,8 @@ class BindVisitor(NodeVisitor):
         for name, bindlist in assign.items():
             for bind in bindlist:
                 self.frames.addNonblockingAssign(name, bind)
+                self.module_cache.addNonblockingAssign(name, bind, self.frames.getCurrent())
+                # TODO cache nonblocking assign
                 msb = bind.msb
                 lsb = bind.lsb
                 ptr = bind.ptr
@@ -886,18 +1082,25 @@ class BindVisitor(NodeVisitor):
                                          raw_tree, condlist, flowlist,
                                          alwaysinfo=alwaysinfo)
                 self.dataflow.addBind(name, new_bind)
+                self.module_cache.addBind(name, new_bind)
 
     def copyBlockingAssigns(self, scope_copy_from, scope_copy_to):
         assign = self.frames.getBlockingAssignsScope(scope_copy_from)
         for name, bindlist in assign.items():
             for bind in bindlist:
                 self.frames.setBlockingAssign(name, bind, scope_copy_to)
+                self.module_cache.addBlockingAssign(name, bind, scope_copy_to)
+                # TODO copy blocking assign
 
     def setConstant(self, name, value):
         self.optimizer.setConstant(name, value)
+        if hasattr(self, "module_cache"):
+            self.module_cache.setConst(name, value)  # 加入缓存
 
     def resetConstant(self, name):
         self.optimizer.resetConstant(name)
+        if hasattr(self, "module_cache"):
+            self.module_cache.setConst(name, None)  # 加入缓存
 
     def getConstant(self, name):
         return self.optimizer.getConstant(name)
@@ -906,6 +1109,8 @@ class BindVisitor(NodeVisitor):
         return self.optimizer.hasConstant(name)
 
     def setConstantTerm(self, name, term):
+        if hasattr(self, "module_cache"):
+            self.module_cache.setConstTerm(name, term)
         self.optimizer.setTerm(name, term)
 
     def getTerm(self, name):
@@ -929,7 +1134,7 @@ class BindVisitor(NodeVisitor):
 
     def renameVar(self, name):
         renamedvar = (name[:-1] +
-                      ScopeLabel('_rn' + str(self.renamecnt) +
+                      ScopeLabel('_rn' + str(self.renamecnt) +  # rn = rename 重命名信号，用于阻塞赋值
                                  '_' + name[-1].scopename, 'signal'))
         self.renamecnt += 1
         return renamedvar
@@ -1105,15 +1310,17 @@ class BindVisitor(NodeVisitor):
         term = Term(name, termtypes, msb, lsb, dims)
         self.dataflow.addTerm(name, term)
         self.setConstantTerm(name, term)
+        #  append 追加到 module的 term
+        self.module_cache.setTerm(name, term)
 
-    def addBind(self, left, right, alwaysinfo=None, bindtype=None):
+    def addBind(self, left, right, alwaysinfo=None, bindtype=None):  # 添加binddict绑定
         if self.frames.isFunctiondef() and not self.frames.isFunctioncall():
             return
         if self.frames.isTaskdef() and not self.frames.isTaskcall():
             return
         lscope = self.frames.getCurrent()
         rscope = lscope
-        dst = self.getDestinations(left, lscope)
+        dst = self.getDestinations(left, lscope)  # 15% used  # 被赋值目标（name, msb, lsb, ptr, None, None）
 
         if bindtype == 'blocking':
             self.addDataflow_blocking(dst, right, lscope, rscope, alwaysinfo)
@@ -1143,32 +1350,52 @@ class BindVisitor(NodeVisitor):
                     continue
                 portarg = (port.argname if arrayindex is None else
                            Pointer(port.argname, IntConst(str(arrayindex))))
-                self.addDataflow(ldst, portarg, lscope, rscope)
+                self.addDataflow(ldst, portarg, lscope, rscope, is_instance=True)
             elif t == 'Output':
                 if port.argname is None:
                     continue
                 portarg = (port.argname if arrayindex is None else
                            Pointer(port.argname, IntConst(str(arrayindex))))
                 rdst = self.getDestinations(portarg, rscope)
-                self.addDataflow(rdst, portname, rscope, lscope)
-            elif t == 'Inout':
+                self.addDataflow(rdst, portname, rscope, lscope, is_instance=True)
+            elif t == 'Inout':  # TODO is_instance的作用
                 if port.argname is None:
                     continue
                 portarg = (port.argname if arrayindex is None else
                            Pointer(port.argname, IntConst(str(arrayindex))))
                 self.addDataflow(ldst, portarg, lscope, rscope)
                 rdst = self.getDestinations(portarg, rscope)
-                self.addDataflow(rdst, portname, rscope, lscope)
+                self.addDataflow(rdst, portname, rscope, lscope, is_instance=True)
 
-    def addDataflow(self, dst, right, lscope, rscope, alwaysinfo=None, bindtype=None):
-        condlist, flowlist = self.getCondflow(lscope)
+    def addDataflow(self, dst, right, lscope, rscope, alwaysinfo=None, bindtype=None, is_instance=False):
+        condlist, flowlist = self.getCondflow(lscope)  # 获取该节点所在的控制流信息
         raw_tree = self.getTree(right, rscope)
-        self.setDataflow(dst, raw_tree, condlist, flowlist, alwaysinfo, bindtype)
+        if isinstance(right, str):
+            lineno = None
+        else:
+            lineno = right.lineno
+
+        for name, msb, lsb, ptr, part_msb, part_lsb in dst:
+            bind = self.makeBind(name, msb, lsb, ptr, part_msb, part_lsb,
+                                 raw_tree, condlist, flowlist,
+                                 num_dst=len(dst),
+                                 alwaysinfo=alwaysinfo,
+                                 bindtype=bindtype)
+
+            self.dataflow.addBind(name, bind)  # 添加 binddict到 dataflow中
+            if not is_instance:
+                self.module_cache.addBind(name, bind)
+
+            if alwaysinfo is not None:  # 除非实例的端口赋值，会继续执行非阻塞赋值的设置
+                self.setNonblockingAssign(name, dst, raw_tree,
+                                          msb, lsb, ptr,
+                                          part_msb, part_lsb,
+                                          alwaysinfo)
 
     def addDataflow_blocking(self, dst, right, lscope, rscope, alwaysinfo):
         condlist, flowlist = self.getCondflow(lscope)
         raw_tree = self.getTree(right, rscope)
-
+        lineno = right.lineno
         self.setDataflow_rename(dst, raw_tree, condlist, flowlist, lscope, alwaysinfo)
 
         if len(dst) == 1:  # set genvar value to the constant table
@@ -1185,19 +1412,27 @@ class BindVisitor(NodeVisitor):
 
     def getCondflow(self, scope):
         condlist = self.getCondlist(scope)
-        condlist = self.resolveCondlist(condlist, scope)
+        condlist = self.resolveCondlist(condlist, scope)  # 50% time used
         flowlist = self.getFlowlist(scope)
         return (condlist, flowlist)
 
+    # @get_time_ms(message="condlist")
     def getCondlist(self, scope):
         ret = []
         s = scope
         while s is not None:
             frame = self.frames.dict[s]
-            cond = frame.getCondition()
+            cond = frame.getCondition()  # 获取当前帧的条件节点
             if cond is not None:
-                ret.append(self.makeDFTree(cond, self.reduceIfScope(s)))
-            if frame.isModule():
+                key = f'{cond} + {s}'
+                if key in self.DFTree_cache:
+                    ret.append(self.DFTree_cache[key])
+                else:
+                    ret.append(self.makeDFTree(cond, self.reduceIfScope(s)))  # 构造当前帧的条件树
+                    self.DFTree_cache[key] = ret[-1]
+
+                # logger.info(cond, s, ret[-1].nextnodes)
+            if frame.isModule():  # 截止到module
                 break
             s = frame.previous
         ret.reverse()
@@ -1361,6 +1596,8 @@ class BindVisitor(NodeVisitor):
                 ScopeLabel(label, 'functioncall'),
                 functioncall=True, generate=self.frames.isGenerate(),
                 always=self.frames.isAlways())
+            # TODO cache func frames
+            self.module_cache.addFrame(self.frames.getCurrent(), self.frames.dict[self.frames.getCurrent()])
 
             varname = self.frames.getCurrent() + ScopeLabel(func.name, 'signal')
 
@@ -1401,6 +1638,8 @@ class BindVisitor(NodeVisitor):
                 ScopeLabel(label, 'taskcall'),
                 taskcall=True, generate=self.frames.isGenerate(),
                 always=self.frames.isAlways())
+            # TODO cache task frames
+            self.module_cache.addFrame(self.frames.getCurrent(), self.frames.dict[self.frames.getCurrent()])
 
             varname = self.frames.getCurrent() + ScopeLabel(task.name, 'signal')
 
@@ -1466,7 +1705,7 @@ class BindVisitor(NodeVisitor):
          match_flowlist) = self.diffBranchTree(merged_tree, condlist, flowlist)
         return replace.replaceUndefined(merged_tree, tree.name)
 
-    def resolveBlockingAssign(self, tree, scope):
+    def resolveBlockingAssign(self, tree, scope):  # 95% time used
         if tree is None:
             return None
 
@@ -1480,7 +1719,8 @@ class BindVisitor(NodeVisitor):
             if signaltype.isGenvar(self.getTermtype(tree.name)):
                 return self.getConstant(tree.name)
 
-            current_bindlist = self.frames.getBlockingAssign(tree.name, scope)
+            # current_bindlist = self.frames.getBlockingAssign(tree.name, scope)
+            current_bindlist = []  # update 原因：感觉没有走这一路 2024 年 10 月 22 日 16:21:46
             if len(current_bindlist) == 0:
                 return tree
             raise NotImplemented
@@ -1534,8 +1774,8 @@ class BindVisitor(NodeVisitor):
                 for bind in current_bindlist:
                     new_tree = DFBranch(DFOperator((bind.ptr, resolved_ptr), 'Eq', probability=tree.probability),
                                         bind.tree, new_tree, probability=tree.probability)
-                print(("Warning: "
-                       "Overwrting Blocking Assignment with Reg Array is not supported"))
+                logger.warning(("Warning: "
+                                "Overwrting Blocking Assignment with Reg Array is not supported"))
                 return new_tree
             resolved_var = self.resolveBlockingAssign(tree.var, scope)
             if isinstance(resolved_var, DFBranch):
@@ -1608,7 +1848,7 @@ class BindVisitor(NodeVisitor):
     def getDsts(self, left, scope):
         if isinstance(left, Lvalue):
             return self.getDsts(left.var, scope)
-        if isinstance(left, LConcat):
+        if isinstance(left, LConcat) or isinstance(left, Concat):  # 修复bug
             dst = []
             for n in left.list:
                 dst.extend(list(self.getDsts(n, scope)))
@@ -1674,24 +1914,6 @@ class BindVisitor(NodeVisitor):
         raise verror.FormatError("unsupported AST node type: %s %s" %
                                  (str(type(left)), str(left)))
 
-    def setDataflow(self, dst, raw_tree, condlist, flowlist,
-                    alwaysinfo=None, bindtype=None):
-
-        for name, msb, lsb, ptr, part_msb, part_lsb in dst:
-            bind = self.makeBind(name, msb, lsb, ptr, part_msb, part_lsb,
-                                 raw_tree, condlist, flowlist,
-                                 num_dst=len(dst),
-                                 alwaysinfo=alwaysinfo,
-                                 bindtype=bindtype)
-
-            self.dataflow.addBind(name, bind)
-
-            if alwaysinfo is not None:  # 当前节点在 always下，所以包含非阻塞赋值
-                self.setNonblockingAssign(name, dst, raw_tree,
-                                          msb, lsb, ptr,
-                                          part_msb, part_lsb,
-                                          alwaysinfo)
-
     def setDataflow_rename(self, dst, raw_tree, condlist, flowlist,
                            scope, alwaysinfo=None):
         renamed_dst = self.getRenamedDst(dst)
@@ -1700,11 +1922,14 @@ class BindVisitor(NodeVisitor):
 
     def setNonblockingAssign(self, name, dst, raw_tree, msb, lsb, ptr,
                              part_msb, part_lsb, alwaysinfo):
+        """将非阻塞赋值的信息压栈"""
         tree = raw_tree
         if len(dst) > 1:
             tree = reorder.reorder(DFPartselect(raw_tree, part_msb, part_lsb, probability=raw_tree.probability))
         bind = Bind(tree, name, msb, lsb, ptr, alwaysinfo)
         self.frames.addNonblockingAssign(name, bind)
+        # TODO cache non Blocking Assign
+        self.module_cache.addNonblockingAssign(name, bind, self.frames.getCurrent())
 
     def getRenamedDst(self, dst):
         renamed_dst = ()
@@ -1719,6 +1944,7 @@ class BindVisitor(NodeVisitor):
             newterm.name = renamed_dname
             newterm.termtype = set(['Rename'])
             self.dataflow.addTerm(renamed_dname, newterm)
+            self.module_cache.setTerm(renamed_dname, newterm)
             newd = (renamed_dname,) + d[1:]
             renamed_dst += (newd,)
         return renamed_dst
@@ -1731,6 +1957,7 @@ class BindVisitor(NodeVisitor):
                     DFPartselect(tree, part_msb, part_lsb, probability=tree.probability))
             bind = Bind(tree, name, msb, lsb, ptr)
             self.dataflow.addBind(name, bind)
+            self.module_cache.addBind(name, bind)
 
             value = self.optimize(tree)
             if isinstance(value, DFEvalValue):
@@ -1747,13 +1974,19 @@ class BindVisitor(NodeVisitor):
                                          renamed_term, condlist, flowlist,
                                          num_dst=len(dst), alwaysinfo=alwaysinfo)
             self.dataflow.addBind(name, renamed_bind)
+            self.module_cache.addBind(name, renamed_bind)
+
             self.frames.setBlockingAssign(name, renamed_bind, scope)
+            # TODO cache blocking assign
+            self.module_cache.addBlockingAssign(name, renamed_bind, scope)
+
             term_i += 1
 
     def makeBind(self, name, msb, lsb, ptr, part_msb, part_lsb,
                  raw_tree, condlist, flowlist,
                  num_dst=1, alwaysinfo=None, bindtype=None):
         """
+
         创建给定参数的Bind对象。
 
         此方法通过处理给定的参数（包括名称、MSB、LSB、指针、部分MSB、部分LSB、原始树、条件列表、流列表、目的地数量、始终信息和绑定类型）
@@ -1812,14 +2045,17 @@ class BindVisitor(NodeVisitor):
                 and current_ptr == ptr):
             # 如果找到匹配项，处理分支树以找到匹配流列表
             (rest_tree,
-             rest_condlist,  # 不匹配的 condalist
+             rest_condlist,  # 不匹配的 条件列表
              rest_flowlist,  # 不匹配的 控制流
              match_flowlist) = self.diffBranchTree(current_tree, condlist, flowlist)
 
         # 将 tree 构造为待添加的分支树
         add_tree = self.makeBranchTree(rest_condlist, rest_flowlist, raw_tree)
+
         # 检查是否存在剩余流列表和剩余树
+        # TODO 这里会合并两个always块中的分支
         if rest_flowlist and rest_tree is not None:
+            # if rest_flowlist and rest_tree is not None and len(match_flowlist) > 0:
             # 为将剩余树附加到添加树而修改剩余流列表
             _rest_flowlist = rest_flowlist[:-1] + (not rest_flowlist[-1],)
             # 使用修改后的剩余流列表将剩余树附加到添加树
@@ -1839,11 +2075,13 @@ class BindVisitor(NodeVisitor):
         return Bind(tree, name, msb, lsb, ptr, alwaysinfo, bindtype)
 
     def diffBranchTree(self, tree, condlist, flowlist, matchflowlist=()):
-        if len(condlist) == 0:
+        if len(condlist) == 0:  # 没有条件需要比较了
             return (tree, condlist, flowlist, matchflowlist)
-        if not isinstance(tree, DFBranch):
+
+        if not isinstance(tree, DFBranch):  # 非分支节点
             return (tree, condlist, flowlist, matchflowlist)
-        if condlist[0] != tree.condnode:  # 如果 tree的 cond节点与 condlist第一项不一致，那说明tree从这里开始与 root产生了差异
+
+        if condlist[0] != tree.condnode:  # 条件不匹配
             return (tree, condlist, flowlist, matchflowlist)
         # 递归处理比较 tree与 root的差异，在matchflowlist中记录相同的分支
         if flowlist[0]:
@@ -1878,9 +2116,6 @@ class BindVisitor(NodeVisitor):
                     None,
                     falsenode
                     , probability=falsenode.probability)
-
-    def setCondNodeProbability(self):
-        pass
 
     def appendBranchTree(self, base, pos, tree):
         if len(pos) == 0:  # 当pos 参数为空 也就是 true或者 false分支都没有，说明子树tree就是根节点

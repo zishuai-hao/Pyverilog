@@ -103,12 +103,9 @@ class VerilogDataflowMerge(object):
                 return True
         return False
 
-    def getTree(self, termname, ptr=None):
+    def getTree(self, termname, ptr=None):  # 获取信号的最终绑定
         bindlist = self.getResolvedBindlist(termname)
         bindlist = self.getOptimizedBindlist(bindlist)
-        if bindlist[0].tree.probability == 10:
-            print(bindlist[0])
-            raise Error
         if bindlist is None:
             return None
         if len(bindlist) == 0:
@@ -309,7 +306,8 @@ class VerilogDataflowMerge(object):
             msb = self.optimizer.optimize(bind.msb)
             lsb = self.optimizer.optimize(bind.lsb)
             ptr = self.optimizer.optimize(bind.ptr)
-            new_bind = copy.deepcopy(bind)
+            # new_bind = copy.deepcopy(bind) # update 浅拷贝，否则会堆栈溢出
+            new_bind = copy.copy(bind)
             new_bind.tree = tree
             new_bind.msb = msb
             new_bind.lsb = lsb
@@ -335,29 +333,34 @@ class VerilogDataflowMerge(object):
 
         for bind in sorted(bindlist, key=bindkey):
             if last_bind is None:
-                merged_bindlist.append(copy.deepcopy(bind))
-                last_bind = copy.deepcopy(bind)
+                last_bind = self.process(bind, merged_bindlist)
             elif isinstance(last_bind.ptr, DFEvalValue) and isinstance(bind.ptr,
                                                                        DFEvalValue) and last_bind.ptr.value != bind.ptr.value:
-                merged_bindlist.append(copy.deepcopy(bind))
-                last_bind = copy.deepcopy(bind)
+                last_bind = self.process(bind, merged_bindlist)
             elif last_bind.lsb is None or bind.lsb is None or last_bind is None or bind.msb is None:
-                merged_bindlist.append(copy.deepcopy(bind))
-                last_bind = copy.deepcopy(bind)
+                last_bind = self.process(bind, merged_bindlist)
             elif last_bind.lsb.value == bind.lsb.value and last_bind.msb.value == bind.msb.value:  # 如果两个 bind 都给同一个信号的同一个位宽范围赋值
                 new_tree = self.mergeTree(last_bind.tree, bind.tree)
                 new_tree.probability = (new_tree.truenode.probability if new_tree.truenode else 0) + (
                     new_tree.falsenode.probability if new_tree.falsenode else 0)
                 new_tree = self.optimizer.optimize(new_tree)
                 merged_bindlist.pop()
-                new_bind = copy.deepcopy(bind)
+                # new_bind = copy.deepcopy(bind) # update 浅拷贝，否则会堆栈溢出 2024 年 10 月 22 日 16:56:01
+                new_bind = copy.copy(bind)
                 new_bind.tree = new_tree
                 merged_bindlist.append(new_bind)
-                last_bind = copy.deepcopy(new_bind)
+                # last_bind = copy.deepcopy(new_bind) # update 浅拷贝，否则会堆栈溢出 2024 年 10 月 22 日 16:56:01
+                last_bind = copy.copy(new_bind)
             else:
-                merged_bindlist.append(copy.deepcopy(bind))
-                last_bind = copy.deepcopy(bind)
+                last_bind = self.process(bind, merged_bindlist)
         return tuple(merged_bindlist)
+
+    def process(self, bind, merged_bindlist):
+        # merged_bindlist.append(copy.deepcopy(bind)) # update 浅拷贝，否则会堆栈溢出 2024 年 10 月 22 日 16:56:01
+        # last_bind = copy.deepcopy(bind)
+        merged_bindlist.append(copy.copy(bind))
+        last_bind = copy.copy(bind)
+        return last_bind
 
     def mergeTree(self, first, second):
         if isinstance(first, DFBranch) and isinstance(second, DFBranch):

@@ -1026,17 +1026,20 @@ class VerilogDataflowOptimizer(VerilogOptimizer):
                 if isinstance(rslt, DFEvalValue):
                     self.constlist[bk] = rslt
 
-        self.resolved_binddict = copy.deepcopy(self.binddict)
+        # self.resolved_binddict = copy.deepcopy(self.binddict) # update 浅拷贝，否则会堆栈溢出 2024 年 10 月 22 日 16:56:01
+        self.resolved_binddict = copy.copy(self.binddict)
         for bk, bv in sorted(self.binddict.items(), key=lambda x: len(x[0])):
             new_bindlist = []
             for bind in bv:
-                new_bind = copy.deepcopy(bind)
+                # new_bind = copy.deepcopy(bind) # update 浅拷贝，否则会堆栈溢出 2024 年 10 月 22 日 16:56:01
+                new_bind = copy.copy(bind)
                 if bk in self.constlist:
                     new_bind.tree = self.constlist[bk]
                 new_bindlist.append(new_bind)
             self.resolved_binddict[bk] = new_bindlist
 
-        self.resolved_terms = copy.deepcopy(self.terms)
+        # self.resolved_terms = copy.deepcopy(self.terms) # update 浅拷贝，否则会堆栈溢出 2024 年 10 月 22 日 16:56:01
+        self.resolved_terms = copy.copy(self.terms)
         for tk, tv in sorted(self.resolved_terms.items(), key=lambda x: len(x[0])):
             if tv.msb is not None:
                 rslt = self.optimizeConstant(tv.msb)

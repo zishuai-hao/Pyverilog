@@ -55,7 +55,8 @@ class NodeVisitor(object):
 # Signal/Object Management Classes
 class AlwaysInfo(object):
     def __init__(self, clock_name='', clock_edge=None, clock_bit=0,
-                 reset_name='', reset_edge=None, reset_bit=0, senslist=()):
+                 reset_name='', reset_edge=None, reset_bit=0,  senslist=() , alwaysScope=None):
+        self.alwaysScope = alwaysScope
         self.clock_name = clock_name
         self.clock_edge = clock_edge
         self.clock_bit = clock_bit
@@ -359,7 +360,7 @@ class Frame(object):
                  alwaysinfo=None, condition=None,
                  module=False, functioncall=False, taskcall=False,
                  generate=False, always=False, initial=False, loop=None, loop_iter=None,
-                 modulename=None, probability=1):
+                 modulename=None, probability=1, ancestorwithblockingassign = None):
         self.name = name
         self.previous = previous
         self.next = []
@@ -385,6 +386,8 @@ class Frame(object):
 
         self.modulename = modulename
         self.probability = probability
+        self.ancestorwithblockingassign = ancestorwithblockingassign
+
 
     def getName(self):
         return self.name
@@ -429,9 +432,9 @@ class Frame(object):
         self.next.append(nextframe)
 
     def setAlwaysInfo(self, clock_name, clock_edge, clock_bit,
-                      reset_name, reset_edge, reset_bit, senslist):
+                      reset_name, reset_edge, reset_bit, senslist, alwaysScope):
         self.alwaysinfo = AlwaysInfo(clock_name, clock_edge, clock_bit,
-                                     reset_name, reset_edge, reset_bit, senslist)
+                                     reset_name, reset_edge, reset_bit, senslist, alwaysScope)
 
     def addSignal(self, node):
         self.variables.addSignal(node.name, node)
@@ -545,7 +548,7 @@ class FrameTable(object):
                  alwaysinfo=None, condition=None,
                  module=False, functioncall=False, taskcall=False,
                  generate=False, always=False, initial=False, loop=None, loop_iter=None,
-                 modulename=None):
+                 modulename=None, previousFrame = None):
 
         scopechain = self.toScopeChain(scopename)
         if scopechain in self.dict:
@@ -560,6 +563,7 @@ class FrameTable(object):
                                       taskcall=taskcall, generate=generate,
                                       always=always, initial=initial, loop=loop, loop_iter=loop_iter,
                                       modulename=modulename)
+                                      # modulename=modulename,ancestorwithblockingassign= )
         self.current = scopechain
         return ret
 
@@ -642,9 +646,9 @@ class FrameTable(object):
         return self.for_iter
 
     def setAlwaysInfo(self, clock_name, clock_edge, clock_bit,
-                      reset_name, reset_edge, reset_bit, senslist):
+                      reset_name, reset_edge, reset_bit, senslist,alwaysScope):
         self.dict[self.current].setAlwaysInfo(clock_name, clock_edge, clock_bit,
-                                              reset_name, reset_edge, reset_bit, senslist)
+                                              reset_name, reset_edge, reset_bit, senslist,alwaysScope)
 
     def setCurrent(self, current):
         self.current = current
@@ -796,6 +800,23 @@ class FrameTable(object):
         self.dict[scope].setBlockingAssign(dst, bind)
 
     def getBlockingAssign(self, dst, scope):
+        # p = scope
+        # while self.dict[p].isAlways():
+        #     ret = self.dict[p].getBlockingAssign(dst)
+        #     if ret:
+        #         return ret
+        #     p = self.dict[p].getPrevious()
+        # return ()
+
+        while True:  # update 原因：访问 dict频率过高 2024 年 10 月 22 日 11:26:36  # node.getAncestorBlockingAssign(dst)
+            node = self.dict.get(scope) #
+            if not node or not node.isAlways(): # 判断是否在alaways中
+                break
+            ret = node.getBlockingAssign(dst)
+            if ret:
+                return ret
+            scope = node.getPrevious()
+        return ()
         p = scope
         while self.dict[p].isAlways():
             ret = self.dict[p].getBlockingAssign(dst)
