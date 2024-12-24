@@ -582,44 +582,49 @@ class BindVisitor(NodeVisitor):
         #     if isinstance(cond_df, DFBranch):
         #         return reorder.insertCond(cond_df, true_df, false_df)
         #     return DFBranch(cond_df, true_df, false_df)
+        if isinstance(cond_node, NotEq):
+            return 1 - self.computerProbability(cond_node.left, scope)
 
         if isinstance(cond_node, Eq):
             return self.computerProbability(cond_node.left, scope)
 
-        if isinstance(cond_node, GreaterEq):
-            left = self.computerProbability(cond_node.left, scope)
-            if isinstance(cond_node.right, Identifier): # 两个信号比较位宽一定一致
-                return Fraction(1, 2)
-            elif isinstance(cond_node.right, IntConst): # 比较信号是否大于一个值，只有信号取到
-                return Fraction(1 - cond_node.right.value * left)
+        if isinstance(cond_node, Mod):
+            return Fraction(1, int(cond_node.right.value))
 
         if isinstance(cond_node, GreaterEq):
             left = self.computerProbability(cond_node.left, scope)
-            if isinstance(cond_node.right, Identifier): # 两个信号比较位宽一定一致
+            if isinstance(cond_node.right, Identifier):  # 两个信号比较位宽一定一致
                 return Fraction(1, 2)
-            elif isinstance(cond_node.right, IntConst): # 比较信号是否大于一个值，只有信号取到
+            elif isinstance(cond_node.right, IntConst):  # 比较信号是否大于一个值，只有信号取到
+                return Fraction(1 - int(cond_node.right.value) * left)
+
+        if isinstance(cond_node, GreaterEq):
+            left = self.computerProbability(cond_node.left, scope)
+            if isinstance(cond_node.right, Identifier):  # 两个信号比较位宽一定一致
+                return Fraction(1, 2)
+            elif isinstance(cond_node.right, IntConst):  # 比较信号是否大于一个值，只有信号取到
                 return Fraction(1 - (cond_node.right.value + 1) * left)
 
         if isinstance(cond_node, LessEq):
             left = self.computerProbability(cond_node.left, scope)
-            if isinstance(cond_node.right, Identifier): # 两个信号比较位宽一定一致
+            if isinstance(cond_node.right, Identifier):  # 两个信号比较位宽一定一致
                 return Fraction(1, 2)
-            elif isinstance(cond_node.right, IntConst): # 比较信号是否大于一个值，只有信号取到
+            elif isinstance(cond_node.right, IntConst):  # 比较信号是否大于一个值，只有信号取到
                 return Fraction((cond_node.right.value + 1) * left)
 
         if isinstance(cond_node, GreaterThan):
             left = self.computerProbability(cond_node.left, scope)
-            if isinstance(cond_node.right, Identifier): # 两个信号比较位宽一定一致
+            if isinstance(cond_node.right, Identifier):  # 两个信号比较位宽一定一致
                 return Fraction(1, 2)
-            elif isinstance(cond_node.right, IntConst): # 比较信号是否大于一个值，只有信号取到
+            elif isinstance(cond_node.right, IntConst):  # 比较信号是否大于一个值，只有信号取到
                 return Fraction(1 - (int(cond_node.right.value) + 1) * left)
 
         if isinstance(cond_node, LessThan):
             left = self.computerProbability(cond_node.left, scope)
-            if isinstance(cond_node.right, Identifier): # 两个信号比较位宽一定一致
+            if isinstance(cond_node.right, Identifier):  # 两个信号比较位宽一定一致
                 return Fraction(1, 2)
-            elif isinstance(cond_node.right, IntConst): # 比较信号是否大于一个值，只有信号取到
-                return Fraction(cond_node.right.value * left)
+            elif isinstance(cond_node.right, IntConst):  # 比较信号是否大于一个值，只有信号取到
+                return Fraction(int(cond_node.right.value) * left)
 
         if isinstance(cond_node, Lor):
             return self.computerProbability(cond_node.left, scope) + self.computerProbability(cond_node.right, scope)
