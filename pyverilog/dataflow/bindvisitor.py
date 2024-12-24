@@ -187,7 +187,6 @@ class BindVisitor(NodeVisitor):
             self.dataflow.addTerm(name, term)
         # 3. 处理optimizer
         for item in module_status.optimizer.constlist.items():
-            raise NotImplementedError
             (name, const) = item
             self.optimizer.setConstant(
                 update_scope(name, instance_scope, current_scope, self.labels, module_status.labels_cache),
@@ -328,6 +327,8 @@ class BindVisitor(NodeVisitor):
         if nodename == '':
             raise verror.FormatError("Module %s requires an instance name" % node.module)
         # 重置 labels
+
+        old_labels  = self.labels
         self.labels = Labels()
 
         current = self.stackInstanceFrame(nodename, node.module)
@@ -360,6 +361,8 @@ class BindVisitor(NodeVisitor):
 
         self.visit(self.moduleinfotable.getDefinition(node.module))
         self.frames.setCurrent(current)
+        self.labels = old_labels
+
 
     def _visit_Instance_primitive(self, node, arrayindex=None):
         # 没有执行到这里

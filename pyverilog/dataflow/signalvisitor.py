@@ -132,6 +132,7 @@ class SignalVisitor(NodeVisitor):
 
         if nodename == '':
             raise verror.FormatError("Module %s requires an instance name" % node.module)
+        old_labels = self.labels
         self.labels = Labels()
         current = self.stackInstanceFrame(nodename, node.module)
 
@@ -154,6 +155,7 @@ class SignalVisitor(NodeVisitor):
 
         self.visit(self.moduleinfotable.getDefinition(node.module))
         self.frames.setCurrent(current)
+        self.labels = old_labels
 
     def _visit_Instance_primitive(self, node):
         pass
