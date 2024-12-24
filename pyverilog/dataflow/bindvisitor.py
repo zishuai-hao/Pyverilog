@@ -588,14 +588,38 @@ class BindVisitor(NodeVisitor):
 
         if isinstance(cond_node, GreaterEq):
             left = self.computerProbability(cond_node.left, scope)
-
             if isinstance(cond_node.right, Identifier): # 两个信号比较位宽一定一致
                 return Fraction(1, 2)
             elif isinstance(cond_node.right, IntConst): # 比较信号是否大于一个值，只有信号取到
                 return Fraction(1 - cond_node.right.value * left)
 
+        if isinstance(cond_node, GreaterEq):
+            left = self.computerProbability(cond_node.left, scope)
+            if isinstance(cond_node.right, Identifier): # 两个信号比较位宽一定一致
+                return Fraction(1, 2)
+            elif isinstance(cond_node.right, IntConst): # 比较信号是否大于一个值，只有信号取到
+                return Fraction(1 - (cond_node.right.value + 1) * left)
 
+        if isinstance(cond_node, LessEq):
+            left = self.computerProbability(cond_node.left, scope)
+            if isinstance(cond_node.right, Identifier): # 两个信号比较位宽一定一致
+                return Fraction(1, 2)
+            elif isinstance(cond_node.right, IntConst): # 比较信号是否大于一个值，只有信号取到
+                return Fraction((cond_node.right.value + 1) * left)
 
+        if isinstance(cond_node, GreaterThan):
+            left = self.computerProbability(cond_node.left, scope)
+            if isinstance(cond_node.right, Identifier): # 两个信号比较位宽一定一致
+                return Fraction(1, 2)
+            elif isinstance(cond_node.right, IntConst): # 比较信号是否大于一个值，只有信号取到
+                return Fraction(1 - (int(cond_node.right.value) + 1) * left)
+
+        if isinstance(cond_node, LessThan):
+            left = self.computerProbability(cond_node.left, scope)
+            if isinstance(cond_node.right, Identifier): # 两个信号比较位宽一定一致
+                return Fraction(1, 2)
+            elif isinstance(cond_node.right, IntConst): # 比较信号是否大于一个值，只有信号取到
+                return Fraction(cond_node.right.value * left)
 
         if isinstance(cond_node, Lor):
             return self.computerProbability(cond_node.left, scope) + self.computerProbability(cond_node.right, scope)
