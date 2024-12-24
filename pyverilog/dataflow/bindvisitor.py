@@ -102,9 +102,9 @@ class BindVisitor(NodeVisitor):
             if bind.alwaysinfo:
                 bind.alwaysinfo = after_process_alaways_info_dict[bind.alwaysinfo.alwaysScope]
             # value.ptr = copy.deepcopy(value.ptr) # TODO 不理解这个 ptr
-            bind.tree = process_tree(copy.deepcopy(bind.tree), visited=set(),
-                                     instance_scope=instance_scope, current_scope=current_scope, labels=self.labels,
-                                     labels_cache=module_status.labels_cache)
+            # bind.tree = process_tree(copy.deepcopy(bind.tree), visited=set(),
+            #                          instance_scope=instance_scope, current_scope=current_scope, labels=self.labels,
+            #                          labels_cache=module_status.labels_cache)
 
             # bind.tree = copy.deepcopy(value.tree)
             return bind
@@ -113,15 +113,18 @@ class BindVisitor(NodeVisitor):
         # 1. 处理frames:sframe always, nb assign, blockassign
         for item in module_status.frames_cache.items():
             raise NotImplementedError
+
+
         for item in self.frames.dict.items():
+            if not self.module_cache.check_leaf(module_node.name):
+                break
             (scope, _) = item
+
             if scope.find(instance_scope):
                 new_scope = scope.replace(instance_scope, current_scope)
                 if (new_scope not in self.frames.dict):
                     continue
                 self.frames.dict[new_scope].probability = self.frames.dict[scope].probability
-
-
 
         # always_info
         for item in module_status.always_cache.items():
@@ -197,9 +200,13 @@ class BindVisitor(NodeVisitor):
             term.name = update_scope(term.name, instance_scope, current_scope, self.labels, module_status.labels_cache)
             self.optimizer.setTerm(name, term)
 
+    @get_time_ms(message="module")
     def visit_ModuleDef(self, node):
+        logger.info(f"遍历模块 {node.name}")
+
         # if self.use_cache and self.module_cache.hasModuleInfo(node.name) and self.module_cache.check_leaf(node.name) :
         if self.use_cache and self.module_cache.hasModuleInfo(node.name):
+            # return
             return self.fast_module_visit(node)
         is_leaf = True
         for item in node.items:
@@ -207,7 +214,6 @@ class BindVisitor(NodeVisitor):
                 is_leaf = False
         self.module_cache.addModuleInfo(node.name, ModuleStatus(self.frames.getCurrent(), FrameTable(), DataFlow(),
                                                                 VerilogOptimizer({}, {}), is_leaf=is_leaf))
-        logger.info(f"遍历模块 {node.name}")
         # cached = ModuleStatus.of(None,self.frames,  self.labels, self.dataflow, self.optimizer)
         # cached_labels = copy.deepcopy(self.labels.labels)
 
@@ -316,7 +322,7 @@ class BindVisitor(NodeVisitor):
             nodename = node.name + '_' + str(i)
             self._visit_Instance_body(node, nodename, arrayindex=i)
 
-    @get_time_ms(message="instance")
+
     def _visit_Instance_body(self, node, nodename, arrayindex=None):
         if node.module in primitives:
             return self._visit_Instance_primitive(node, arrayindex)
@@ -2122,11 +2128,13 @@ class BindVisitor(NodeVisitor):
             return tree
         if len(pos) == 1:  # 否则将子树tree追加到 base分支上
             if pos[0]:
+                base_falsenode_probability = 0 if base.falsenode is None else base.falsenode.probability
                 return DFBranch(base.condnode, tree, base.falsenode,
-                                probability=tree.probability + base.falsenode.probability)
+                                probability=tree.probability + base_falsenode_probability)
             else:
+                base_truenode_probability = 0 if base.truenode is None else base.truenode.probability
                 return DFBranch(base.condnode, base.truenode, tree,
-                                probability=tree.probability + base.truenode.probability)
+                                probability=tree.probability + base_truenode_probability)
         else:
             if pos[0]:
                 base_falsenode_probability = 0 if base.falsenode is None else base.falsenode.probability
