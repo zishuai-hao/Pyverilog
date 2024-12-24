@@ -114,7 +114,6 @@ class BindVisitor(NodeVisitor):
         for item in module_status.frames_cache.items():
             raise NotImplementedError
 
-
         for item in self.frames.dict.items():
             if not self.module_cache.check_leaf(module_node.name):
                 break
@@ -321,7 +320,6 @@ class BindVisitor(NodeVisitor):
         for i in range(lsb, msb + 1):
             nodename = node.name + '_' + str(i)
             self._visit_Instance_body(node, nodename, arrayindex=i)
-
 
     def _visit_Instance_body(self, node, nodename, arrayindex=None):
         if node.module in primitives:
@@ -571,6 +569,8 @@ class BindVisitor(NodeVisitor):
                 raise verror.DefinitionError('No such signal: %s' % cond_node.name)
             term = self.dataflow.getTerm(name)
             msb, lsb = term.msb, term.lsb
+            if not isinstance(msb, DFIntConst) or not isinstance(lsb, DFIntConst):
+                return Fraction(1)
             result = Fraction(1, pow(2, int(msb.value) - int(lsb.value) + 1))
             # print(f"{cond_node}概率：{result}")
             return result
@@ -585,6 +585,17 @@ class BindVisitor(NodeVisitor):
 
         if isinstance(cond_node, Eq):
             return self.computerProbability(cond_node.left, scope)
+
+        if isinstance(cond_node, GreaterEq):
+            left = self.computerProbability(cond_node.left, scope)
+
+            if isinstance(cond_node.right, Identifier): # 两个信号比较位宽一定一致
+                return Fraction(1, 2)
+            elif isinstance(cond_node.right, IntConst): # 比较信号是否大于一个值，只有信号取到
+                return Fraction(1 - cond_node.right.value * left)
+
+
+
 
         if isinstance(cond_node, Lor):
             return self.computerProbability(cond_node.left, scope) + self.computerProbability(cond_node.right, scope)
@@ -603,7 +614,12 @@ class BindVisitor(NodeVisitor):
                 return Fraction(1, pow(2, int(ptr_df.value) - int(ptr_df.value) + 1))
 
             raise NotImplemented
+        if isinstance(cond_node, Land):  # logic and
+            return self.computerProbability(cond_node.right, scope) * self.computerProbability(cond_node.left, scope)
 
+        if isinstance(cond_node, Partselect):
+            msb, lsb = cond_node.msb, cond_node.lsb
+            return Fraction(1, pow(2, int(msb.value) - int(lsb.value) + 1))
         # if isinstance(cond_node, Operator):  # EQ
         #     left_df = self.makeDFTree(cond_node.left, scope)
         #     right_df = self.makeDFTree(cond_node.right, scope)
@@ -1560,8 +1576,7 @@ class BindVisitor(NodeVisitor):
             ptr_df = self.makeDFTree(node.ptr, scope, probability)
             # 如果变量的DFT是一个终端并且有维度，就创建一个指针节点。
             if isinstance(var_df, DFTerminal) and self.getTermDims(var_df.name) is not None:
-                raise NotImplemented
-                return DFPointer(var_df, ptr_df)
+                return DFPointer(var_df, ptr_df, probability=probability)
             # 否则，创建一个部分选择节点，把指针作为MSB和LSB。
             return DFPartselect(var_df, ptr_df, copy.deepcopy(ptr_df), probability=probability)
 
@@ -1768,15 +1783,14 @@ class BindVisitor(NodeVisitor):
             return DFPartselect(resolved_var, resolved_msb, resolved_lsb, probability=tree.probability)
 
         if isinstance(tree, DFPointer):
-            # raise NotImplemented
             resolved_ptr = self.resolveBlockingAssign(tree.ptr, scope)
             if (isinstance(tree.var, DFTerminal) and
                     self.getTermDims(tree.var.name) is not None):
                 current_bindlist = self.frames.getBlockingAssign(tree.var.name, scope)
                 if len(current_bindlist) == 0:
-                    raise NotImplemented
-                    return DFPointer(tree.var, resolved_ptr)
-                new_tree = DFPointer(tree.var, resolved_ptr)
+                    # raise NotImplemented
+                    return DFPointer(tree.var, resolved_ptr, probability=tree.probability)
+                new_tree = DFPointer(tree.var, resolved_ptr, probability=tree.probability)
                 for bind in current_bindlist:
                     new_tree = DFBranch(DFOperator((bind.ptr, resolved_ptr), 'Eq', probability=tree.probability),
                                         bind.tree, new_tree, probability=tree.probability)
