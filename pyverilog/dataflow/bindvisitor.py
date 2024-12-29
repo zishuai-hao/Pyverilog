@@ -652,6 +652,12 @@ class BindVisitor(NodeVisitor):
         if isinstance(cond_node, Partselect):
             msb, lsb = cond_node.msb, cond_node.lsb
             return Fraction(1, pow(2, int(msb.value) - int(lsb.value) + 1))
+
+        if isinstance(cond_node, Concat):
+            probability = Fraction(1)
+            for n in cond_node.list:
+                 probability *= self.computerProbability(n, scope)
+            return probability
         # if isinstance(cond_node, Operator):  # EQ
         #     left_df = self.makeDFTree(cond_node.left, scope)
         #     right_df = self.makeDFTree(cond_node.right, scope)
@@ -691,14 +697,7 @@ class BindVisitor(NodeVisitor):
         #     return DFPartselect(var_df, msb_df, lsb_df)
         #
 
-        # if isinstance(cond_node, Concat):
-        #     nextcond_nodes = []
-        #     for n in cond_node.list:
-        #         nextcond_nodes.append(self.makeDFTree(n, scope))
-        #     for n in nextcond_nodes:
-        #         if isinstance(n, DFBranch):
-        #             return reorder.insertConcat(tuple(nextcond_nodes))
-        #     return DFConcat(tuple(nextcond_nodes))
+
         #
         # if isinstance(cond_node, Repeat):
         #     nextcond_nodes = []
